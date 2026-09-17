@@ -1,9 +1,11 @@
 import type {
   AgentSnapshot,
   DomainSnapshot,
+  HandoffRecord,
   RunSnapshot,
   SwarmEvent,
   TaskSnapshot,
+  VoteRecord,
 } from "@swarm/schema";
 import { emptySnapshot } from "@swarm/schema";
 
@@ -61,6 +63,62 @@ function patchTask(
     tasks: snapshot.tasks.map((task) =>
       task.id === taskId ? { ...task, ...patch } : task,
     ),
+  };
+}
+
+function spawnAgent(prev: RunSnapshot, incomingRaw: AgentSnapshot, parentAgentId?: string): RunSnapshot {
+  const incoming = withAgentDefaults({
+    ...incomingRaw,
+    parentId: incomingRaw.parentId ?? parentAgentId,
+  });
+  let agents = [...prev.agents.filter((agent) => agent.id !== incoming.id), incoming];
+  if (incoming.parentId) {
+    agents = agents.map((agent) =>
+      agent.id === incoming.parentId
+        ? {
+            ...agent,
+            children: agent.children.includes(incoming.id)
+              ? agent.children
+              : [...agent.children, incoming.id],
+          }
+        : agent,
+    );
+  }
+  const counts = liveCounts(agents);
+  return {
+    ...prev,
+    agents,
+    budget: { ...prev.budget, ...counts },
+  };
+}
+
+function despawnAgent(prev: RunSnapshot, agentId: string): RunSnapshot {
+  if (!prev.agents.some((agent) => agent.id === agentId)) return prev;
+  const agents = prev.agents
+    .filter((agent) => agent.id !== agentId)
+    .map((agent) => ({
+      ...agent,
+      children: agent.children.filter((id) => id !== agentId),
+    }));
+  const counts = liveCounts(agents);
+  return {
+    ...prev,
+    agents,
+    budget: { ...prev.budget, ...counts },
+  };
+}
+
+function recordVote(prev: RunSnapshot, vote: VoteRecord): RunSnapshot {
+  if (
+    prev.votes.some(
+      (item) => item.taskId === vote.taskId && item.voterId === vote.voterId && item.at === vote.at,
+    )
+  ) {
+    return prev;
+  }
+  return {
+    ...patchTask(prev, vote.taskId, { lastVote: vote }),
+    votes: [...prev.votes, vote],
   };
 }
 
@@ -137,40 +195,60 @@ export function applyEvent(prev: RunSnapshot, event: SwarmEvent): RunSnapshot {
     case "task.handoff":
     case "task.handoff.rejected":
       return { ...prev, handoffs: [...prev.handoffs, event.handoff] };
-    case "task.vote": {
-      const vote = {
+    case "task.delegated": {
+      const exists = prev.handoffs.some(
+        (item) =>
+          item.taskId === event.taskId &&
+          item.from === event.from &&
+          item.to === event.to &&
+          item.hop === (event.hop ?? 1) &&
+          !item.rejected,
+      );
+      if (exists) return prev;
+      const handoff: HandoffRecord = {
+        id: `del-${event.taskId}-${event.from}-${event.to}-${event.at}`,
+        from: event.from,
+        to: event.to,
+        taskId: event.taskId,
+        reason: event.reason,
+        hop: event.hop ?? 1,
+        rejected: false,
+        at: event.at,
+      };
+      return { ...prev, handoffs: [...prev.handoffs, handoff] };
+    }
+    case "task.vote":
+      return recordVote(prev, {
         taskId: event.taskId,
         voterId: event.voterId,
         vote: event.vote,
         reason: event.reason,
         at: event.at,
-      };
-      return {
-        ...patchTask(prev, event.taskId, { lastVote: vote }),
-        votes: [...prev.votes, vote],
-      };
+      });
+    case "orchestrator.review":
+      return recordVote(prev, {
+        taskId: event.taskId,
+        voterId: event.orchestratorId,
+        vote: event.vote,
+        reason: event.reason,
+        at: event.at,
+      });
+    case "agent.spawned":
+      return spawnAgent(prev, event.agent, event.parentAgentId);
+    case "subagent.spawned":
+      return spawnAgent(prev, event.agent, event.parentAgentId);
+    case "subagent.completed": {
+      let next = patchAgent(prev, event.parentAgentId, { lastArtifact: event.artifact });
+      next = patchAgent(next, event.agentId, { lastArtifact: event.artifact });
+      return next;
     }
-    case "agent.spawned": {
-      const incoming = withAgentDefaults(event.agent);
-      let agents = [...prev.agents.filter((agent) => agent.id !== incoming.id), incoming];
-      if (incoming.parentId) {
-        agents = agents.map((agent) =>
-          agent.id === incoming.parentId
-            ? {
-                ...agent,
-                children: agent.children.includes(incoming.id)
-                  ? agent.children
-                  : [...agent.children, incoming.id],
-              }
-            : agent,
-        );
-      }
-      const counts = liveCounts(agents);
-      return {
-        ...prev,
-        agents,
-        budget: { ...prev.budget, ...counts },
-      };
+    case "subagent.terminated": {
+      const next = event.parentAgentId
+        ? patchAgent(prev, event.parentAgentId, {
+            lastArtifact: { terminated: event.reason, agentId: event.agentId },
+          })
+        : prev;
+      return despawnAgent(next, event.agentId);
     }
     case "agent.activity":
       return patchAgent(prev, event.agentId, {
@@ -179,7 +257,7 @@ export function applyEvent(prev: RunSnapshot, event: SwarmEvent): RunSnapshot {
         currentStep: event.step ?? prev.agents.find((a) => a.id === event.agentId)?.currentStep,
       });
     case "agent.tool.started":
-      return patchAgent(prev, event.agentId, { currentTool: event.toolId });
+      return patchAgent(prev, event.agentId, { currentTool: event.toolId, lastToolInput: event.input });
     case "agent.tool.ended":
       return patchAgent(prev, event.agentId, { currentTool: undefined });
     case "agent.step":
@@ -200,20 +278,8 @@ export function applyEvent(prev: RunSnapshot, event: SwarmEvent): RunSnapshot {
     }
     case "agent.scratchpad":
       return patchAgent(prev, event.agentId, { scratchpad: event.prompt });
-    case "agent.despawned": {
-      const agents = prev.agents
-        .filter((agent) => agent.id !== event.agentId)
-        .map((agent) => ({
-          ...agent,
-          children: agent.children.filter((id) => id !== event.agentId),
-        }));
-      const counts = liveCounts(agents);
-      return {
-        ...prev,
-        agents,
-        budget: { ...prev.budget, ...counts },
-      };
-    }
+    case "agent.despawned":
+      return despawnAgent(prev, event.agentId);
     default:
       return prev;
   }

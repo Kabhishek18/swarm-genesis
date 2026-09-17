@@ -227,6 +227,7 @@ export class SwarmKernel {
     def: AgentDef,
     envelope: ConstraintEnvelope,
     activity: AgentSnapshot["activity"] = "idling",
+    parentId?: string,
   ): void {
     requireEnvelope(envelope);
     const agent: AgentSnapshot = {
@@ -234,6 +235,7 @@ export class SwarmKernel {
       name: def.name,
       kind: def.kind,
       domainId: def.domainId,
+      parentId,
       role: def.role,
       stationId: def.stationId,
       activity,
@@ -245,7 +247,7 @@ export class SwarmKernel {
       spawnedAt: this.clock(),
       visible: true,
     };
-    this.emit({ type: "agent.spawned", agent, at: this.clock() });
+    this.emit({ type: "agent.spawned", agent, parentAgentId: parentId, at: this.clock() });
   }
 
   private async bootstrap(
@@ -282,7 +284,7 @@ export class SwarmKernel {
       });
       const orch = playbook.agents.find((agent) => agent.id === domain.orchestratorId);
       if (!orch) throw new Error(`Missing orchestrator ${domain.orchestratorId}`);
-      this.spawnFromDef(orch, envelope, "thinking");
+      this.spawnFromDef(orch, envelope, "thinking", meta.id);
       this.emit({
         type: "agent.step",
         agentId: orch.id,
@@ -292,7 +294,9 @@ export class SwarmKernel {
     }
 
     for (const worker of playbook.agents.filter((agent) => agent.kind === "worker")) {
-      this.spawnFromDef(worker, envelope, "idling");
+      const parentId =
+        playbook.domains.find((domain) => domain.id === worker.domainId)?.orchestratorId ?? meta.id;
+      this.spawnFromDef(worker, envelope, "idling", parentId);
     }
 
     for (const task of playbook.tasks) {
@@ -578,13 +582,22 @@ export class SwarmKernel {
     voterId: string,
     decision: ReviewDecision,
   ): Promise<void> {
+    const at = this.clock();
     this.emit({
       type: "task.vote",
       taskId: task.id,
       voterId,
       vote: decision.vote,
       reason: decision.reason,
-      at: this.clock(),
+      at,
+    });
+    this.emit({
+      type: "orchestrator.review",
+      taskId: task.id,
+      orchestratorId: voterId,
+      vote: decision.vote,
+      reason: decision.reason,
+      at,
     });
   }
 
@@ -644,6 +657,15 @@ export class SwarmKernel {
 
     this.emit({ type: "task.handoff", handoff: record, at: this.clock() });
     this.emit({
+      type: "task.delegated",
+      from,
+      to: handoff.to,
+      taskId: task.id,
+      reason: handoff.reason,
+      hop,
+      at: this.clock(),
+    });
+    this.emit({
       type: "agent.activity",
       agentId: from,
       activity: "reviewing",
@@ -679,7 +701,7 @@ export class SwarmKernel {
     sub: SubagentDef,
     envelope: ConstraintEnvelope,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<unknown> {
     if (!sub) return;
     requireEnvelope(envelope);
     await this.acquireSubagentSlot(signal);
@@ -714,7 +736,13 @@ export class SwarmKernel {
       spawnedAt: this.clock(),
       visible,
     };
-    this.emit({ type: "agent.spawned", agent, at: this.clock() });
+    this.emit({ type: "agent.spawned", agent, parentAgentId: parent.id, at: this.clock() });
+    this.emit({
+      type: "subagent.spawned",
+      parentAgentId: parent.id,
+      agent,
+      at: this.clock(),
+    });
 
     const ttl = snapshot.budget.subagentTtlMs;
     const ttlAbort = new AbortController();
@@ -725,10 +753,29 @@ export class SwarmKernel {
       ttlAbort.abort();
     }, ttl / this.timeScale);
 
+    let artifact: unknown = null;
+    let ended: "complete" | "ttl" | "stop" = "complete";
     try {
-      await this.runTool(agent.id, sub.toolId, sub.toolInput, envelope, ttlAbort.signal);
+      artifact = await this.runTool(agent.id, sub.toolId, sub.toolInput, envelope, ttlAbort.signal);
+      this.emit({
+        type: "subagent.completed",
+        agentId: agent.id,
+        parentAgentId: parent.id,
+        artifact,
+        at: this.clock(),
+      });
+      return artifact;
     } catch (error) {
+      ended = signal.aborted ? "stop" : "ttl";
+      this.emit({
+        type: "subagent.terminated",
+        agentId: agent.id,
+        parentAgentId: parent.id,
+        reason: ended,
+        at: this.clock(),
+      });
       if (!isAbortError(error)) throw error;
+      return { error: ended };
     } finally {
       clearTimeout(ttlTimer);
       signal.removeEventListener("abort", onParentAbort);
@@ -799,7 +846,7 @@ export class SwarmKernel {
           stationId: snap?.stationId ?? "hq",
           hue: snap?.hue ?? 0,
         };
-        await this.runSubagent(playbook, parentDef, def, env, signal);
+        return this.runSubagent(playbook, parentDef, def, env, signal);
       },
     };
   }

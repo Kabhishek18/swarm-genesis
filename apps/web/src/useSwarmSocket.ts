@@ -7,6 +7,7 @@ interface GatewayMessage {
   event?: SwarmEvent;
   snapshot?: RunSnapshot;
   runId?: string;
+  live?: boolean;
   error?: string;
 }
 
@@ -29,10 +30,12 @@ export function useSwarmSocket() {
   const [liveModel, setLiveModel] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const runIdRef = useRef<string | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${window.location.host}/ws`);
+    wsRef.current = ws;
     ws.onopen = () => {
       setConnected(true);
       void fetch("/api/runtime")
@@ -40,7 +43,10 @@ export function useSwarmSocket() {
         .then((data) => setLiveModel(Boolean(data.live)))
         .catch(() => undefined);
     };
-    ws.onclose = () => setConnected(false);
+    ws.onclose = () => {
+      setConnected(false);
+      wsRef.current = null;
+    };
     ws.onerror = () => setConnected(false);
     ws.onmessage = (event) => {
       let message: GatewayMessage;
@@ -58,18 +64,29 @@ export function useSwarmSocket() {
         setSnapshot((prev) => cloneSnapshot(applyEvent(prev, message.event!)));
       } else if (message.type === "snapshot" && message.snapshot) {
         setSnapshot(cloneSnapshot(message.snapshot));
+      } else if (message.type === "hello" && message.snapshot) {
+        setSnapshot(cloneSnapshot(message.snapshot));
       } else if (message.type === "run") {
         setSnapshot(emptySnapshot());
         setError(null);
+        if (typeof message.live === "boolean") setLiveModel(message.live);
       } else if (message.type === "error" && message.error) {
         setError(message.error);
       }
     };
-    return () => ws.close();
+    return () => {
+      wsRef.current = null;
+      ws.close();
+    };
   }, []);
 
   async function start(playbookId: string, goal?: string): Promise<void> {
     setError(null);
+    const socket = wsRef.current;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "start", playbookId, goal }));
+      return;
+    }
     const response = await fetch("/api/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -90,6 +107,11 @@ export function useSwarmSocket() {
 
   async function stop(): Promise<void> {
     const id = runIdRef.current;
+    const socket = wsRef.current;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "stop", runId: id }));
+      return;
+    }
     if (!id) return;
     await fetch(`/api/runs/${id}/stop`, {
       method: "POST",

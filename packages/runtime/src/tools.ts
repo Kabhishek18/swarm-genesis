@@ -92,8 +92,8 @@ export async function executeCappedTool(
         toolInput: args.toolInput,
         stationId: args.stationId ? String(args.stationId) : undefined,
       };
-      await ctx?.spawnSubagent?.(def);
-      return { spawned: def.id, name: def.name };
+      const artifact = await ctx?.spawnSubagent?.(def);
+      return { spawned: def.id, name: def.name, artifact: artifact ?? null };
     }
     default:
       throw new Error(`Tool ${name} is not implemented`);

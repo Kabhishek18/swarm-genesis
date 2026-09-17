@@ -141,4 +141,18 @@ describe("Ollama tool loop", () => {
     expect(result.artifact).toEqual({ pong: true });
     expect(thoughts[0]).toMatch(/^simulated:/);
   });
+
+  it("spawn_subagent returns the child payload from the tool context", async () => {
+    const { executeCappedTool } = await import("./tools.js");
+    const artifact = await executeCappedTool(
+      "spawn_subagent",
+      { id: "kid", name: "Kid", toolId: "noop" },
+      {
+        agentId: "parent",
+        spawnSubagent: async () => ({ summarized: true }),
+      },
+      new AbortController().signal,
+    );
+    expect(artifact).toEqual({ spawned: "kid", name: "Kid", artifact: { summarized: true } });
+  });
 });

@@ -79,10 +79,36 @@ export function renderOffice(ctx: CanvasRenderingContext2D, office: OfficeState,
   for (const station of layout.stations) {
     drawStation(ctx, station, now);
   }
+  drawNesting(ctx, office);
   const sorted = [...office.characters.values()].sort((a, b) => a.y - b.y);
   for (const character of sorted) {
     drawCharacter(ctx, character, office.selectedId === character.agentId, now);
   }
+}
+
+function drawNesting(ctx: CanvasRenderingContext2D, office: OfficeState): void {
+  ctx.save();
+  ctx.strokeStyle = "rgba(125, 211, 252, 0.35)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2, 2]);
+  for (const child of office.characters.values()) {
+    if (!child.parentId || !child.visible || child.despawn > 0) continue;
+    const parent = office.characters.get(child.parentId);
+    if (!parent || !parent.visible || parent.despawn > 0) continue;
+    ctx.beginPath();
+    ctx.moveTo(parent.x + 8, parent.y + 8);
+    ctx.lineTo(child.x + 8, child.y + 8);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawPlaque(ctx: CanvasRenderingContext2D, x: number, y: number, label: string): void {
+  ctx.fillStyle = "#0d1117";
+  ctx.fillRect(x + 1, y + 18, label.length * 4 + 4, 7);
+  ctx.fillStyle = PALETTE.text;
+  ctx.font = "5px monospace";
+  ctx.fillText(label, x + 3, y + 24);
 }
 
 function drawTiles(ctx: CanvasRenderingContext2D, layout: OfficeLayout): void {
@@ -134,13 +160,16 @@ function drawStation(ctx: CanvasRenderingContext2D, station: Station, now: numbe
   switch (station.type) {
     case "hq":
       drawDesk(ctx, x, y, PALETTE.hq, true, now);
+      drawPlaque(ctx, x, y, "CMD");
       break;
     case "desk":
       drawDesk(ctx, x, y, PALETTE.wood, true, now);
+      drawPlaque(ctx, x, y, "ORCH");
       break;
     case "terminal":
     case "testBay":
       drawTerminal(ctx, x, y, station.type === "testBay", now);
+      drawPlaque(ctx, x, y, station.type === "testBay" ? "SUB" : "WK");
       break;
     case "archive":
       drawArchive(ctx, x, y);
@@ -269,6 +298,14 @@ function drawCharacter(
     }
   }
 
+  if (character.blocked) {
+    ctx.strokeStyle = PALETTE.alert;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - 1, y - 1, 18, 20);
+  }
+
+  drawActivityBadge(ctx, character, x, y, now);
+
   ctx.fillStyle = PALETTE.text;
   ctx.font = "6px monospace";
   ctx.fillText(character.name, x - 6, y - 4);
@@ -297,3 +334,39 @@ function drawCharacter(
   ctx.globalAlpha = 1;
 }
 
+
+function drawActivityBadge(
+  ctx: CanvasRenderingContext2D,
+  character: Character,
+  x: number,
+  y: number,
+  now: number,
+): void {
+  const kind = character.kind === "meta" || character.kind === "domain-orchestrator" ? "ORCH" : character.kind === "subagent" ? "SUB" : "WK";
+  ctx.fillStyle = character.kind === "meta" ? PALETTE.hq : character.kind === "subagent" ? "#7dd3fc" : "#9aa4b2";
+  ctx.font = "5px monospace";
+  ctx.fillText(kind, x + 12, y - 5);
+
+  if (character.activity === "idling") return;
+  const bx = x + 14;
+  const by = y - 2;
+  ctx.fillStyle = "#0b1220";
+  ctx.fillRect(bx, by, 6, 6);
+  if (character.activity === "thinking") {
+    ctx.strokeStyle = "#3d8bfd";
+    ctx.beginPath();
+    ctx.arc(bx + 3, by + 3, 2, 0, Math.PI * (0.5 + (now / 180) % 2));
+    ctx.stroke();
+  } else if (character.activity === "fetching") {
+    ctx.fillStyle = "#3ecf8e";
+    ctx.fillRect(bx + 1, by + 1, 4, 2);
+    ctx.fillRect(bx + 1, by + 4, 3, 1);
+  } else if (character.activity === "reviewing") {
+    ctx.fillStyle = "#f0c674";
+    ctx.fillRect(bx + 1, by + 2, 4, 2);
+  } else if (character.activity === "spawning") {
+    ctx.fillStyle = "#7dd3fc";
+    ctx.fillRect(bx + 2, by + 1, 2, 4);
+    ctx.fillRect(bx + 1, by + 2, 4, 2);
+  }
+}

@@ -21,6 +21,8 @@ export type TaskStatus =
 
 export type AlertLevel = "info" | "warn" | "critical";
 
+export type SubagentEndReason = "ttl" | "complete" | "cap" | "stop";
+
 export interface ConstraintEnvelope {
   originalGoal: string;
   qualityBar: string;
@@ -155,6 +157,8 @@ export interface AgentSnapshot {
   envelope: ConstraintEnvelope;
   currentTool?: string;
   currentStep?: string;
+  lastToolInput?: unknown;
+  lastArtifact?: unknown;
   steps: string[];
   contextPayload?: string;
   thoughts: ThoughtRecord[];
@@ -281,7 +285,24 @@ export type SwarmEvent =
       handoff: HandoffRecord;
       at: number;
     }
-  | { type: "agent.spawned"; agent: AgentSnapshot; at: number }
+  | {
+      type: "task.delegated";
+      from: string;
+      to: string;
+      taskId: string;
+      reason: string;
+      hop?: number;
+      at: number;
+    }
+  | {
+      type: "orchestrator.review";
+      taskId: string;
+      orchestratorId: string;
+      vote: "accept" | "reject";
+      reason: string;
+      at: number;
+    }
+  | { type: "agent.spawned"; agent: AgentSnapshot; parentAgentId?: string; at: number }
   | {
       type: "agent.activity";
       agentId: string;
@@ -319,6 +340,28 @@ export type SwarmEvent =
       voterId: string;
       vote: "accept" | "reject";
       reason: string;
+      at: number;
+    }
+  | {
+      type: "subagent.spawned";
+      parentAgentId: string;
+      agent: AgentSnapshot;
+      taskId?: string;
+      at: number;
+    }
+  | {
+      type: "subagent.completed";
+      agentId: string;
+      parentAgentId: string;
+      artifact?: unknown;
+      tokens?: number;
+      at: number;
+    }
+  | {
+      type: "subagent.terminated";
+      agentId: string;
+      parentAgentId?: string;
+      reason: SubagentEndReason;
       at: number;
     }
   | { type: "agent.despawned"; agentId: string; at: number };

@@ -151,6 +151,10 @@ export class OfficeState {
       station.alert =
         occupants.some((agent) => alerted.has(agent.id)) || (globalAlarm && station.type === "hq");
     }
+    for (const character of this.characters.values()) {
+      character.blocked =
+        alerted.has(character.agentId) || (globalAlarm && character.kind === "meta");
+    }
   }
 
   update(dt: number): void {

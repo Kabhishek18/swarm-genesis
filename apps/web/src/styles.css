@@ -299,3 +299,20 @@ select:disabled {
 .sprite-hit.selected {
   border-color: #d7e0ea;
 }
+
+.kind-tag {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--line);
+  padding: 2px 6px;
+}
+.kind-tag.meta,
+.kind-tag.domain-orchestrator {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.kind-tag.subagent {
+  color: #7dd3fc;
+  border-color: #7dd3fc;
+}

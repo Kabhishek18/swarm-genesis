@@ -11,7 +11,15 @@ export interface GatewayMessage {
   event?: SwarmEvent;
   snapshot?: RunSnapshot;
   runId?: string;
+  live?: boolean;
   error?: string;
+}
+
+export interface GatewayCommand {
+  type: "start" | "stop";
+  playbookId?: string;
+  goal?: string;
+  runId?: string;
 }
 
 interface LiveRun {
@@ -70,32 +78,16 @@ export async function buildGateway(store: EventStore): Promise<FastifyInstance> 
     };
   });
 
-  app.get("/api/runs/:id", async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const live = runs.get(id);
-    if (live) return { runId: id, snapshot: live.kernel.getSnapshot() };
-    try {
-      const snapshot = await store.snapshot(id);
-      return { runId: id, snapshot };
-    } catch {
-      return reply.code(404).send({ error: "run not found" });
-    }
-  });
-
-  app.post("/api/runs", async (request, reply) => {
-    const body = (request.body ?? {}) as { playbookId?: string; goal?: string };
-    if (!body.playbookId) {
-      return reply.code(400).send({ error: "playbookId required" });
-    }
+  async function startRun(playbookId: string, goal?: string): Promise<{ runId: string; live: boolean }> {
+    const base = getPlaybook(playbookId);
+    const playbook = {
+      ...base,
+      trigger: goal?.trim() || base.trigger,
+    };
     for (const existing of runs.values()) {
       existing.kernel.stop();
     }
     runs.clear();
-    const base = getPlaybook(body.playbookId);
-    const playbook = {
-      ...base,
-      trigger: body.goal?.trim() || base.trigger,
-    };
     const bound = await wrapPlaybook(playbook);
     const kernel = new SwarmKernel();
     const runId = `run-${Date.now()}`;
@@ -114,7 +106,7 @@ export async function buildGateway(store: EventStore): Promise<FastifyInstance> 
       broadcast({ type: "event", event, runId });
     });
 
-    broadcast({ type: "run", runId, snapshot: emptySnapshot() });
+    broadcast({ type: "run", runId, snapshot: emptySnapshot(), live: bound.live });
     tickSnapshots();
 
     void kernel
@@ -132,21 +124,55 @@ export async function buildGateway(store: EventStore): Promise<FastifyInstance> 
       });
 
     return { runId, live: bound.live };
-  });
+  }
 
-  app.post("/api/runs/:id/stop", async (request, reply) => {
-    const { id } = request.params as { id: string };
+  async function stopRun(id: string | null): Promise<{ runId: string; status: string } | null> {
+    if (!id) return null;
     const live = runs.get(id);
-    if (!live) return reply.code(404).send({ error: "run not found" });
+    if (!live) return null;
     live.kernel.stop();
     live.stopping = true;
     await store.setStatus(id, "failed");
     return { runId: id, status: "stopped" };
+  }
+
+  app.get("/api/runs/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const live = runs.get(id);
+    if (live) return { runId: id, snapshot: live.kernel.getSnapshot() };
+    try {
+      const snapshot = await store.snapshot(id);
+      return { runId: id, snapshot };
+    } catch {
+      return reply.code(404).send({ error: "run not found" });
+    }
+  });
+
+  app.post("/api/runs", async (request, reply) => {
+    const body = (request.body ?? {}) as { playbookId?: string; goal?: string };
+    if (!body.playbookId) {
+      return reply.code(400).send({ error: "playbookId required" });
+    }
+    return startRun(body.playbookId, body.goal);
+  });
+
+  app.post("/api/runs/:id/stop", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const stopped = await stopRun(id);
+    if (!stopped) return reply.code(404).send({ error: "run not found" });
+    return stopped;
   });
 
   app.get("/ws", { websocket: true }, (socket) => {
     sockets.add(socket);
     const live = currentRunId ? runs.get(currentRunId) : undefined;
+    socket.send(
+      JSON.stringify({
+        type: "hello",
+        runId: live?.id,
+        snapshot: live?.kernel.getSnapshot(),
+      } satisfies GatewayMessage),
+    );
     if (live) {
       socket.send(
         JSON.stringify({
@@ -156,6 +182,37 @@ export async function buildGateway(store: EventStore): Promise<FastifyInstance> 
         } satisfies GatewayMessage),
       );
     }
+    socket.on("message", (raw) => {
+      let command: GatewayCommand;
+      try {
+        command = JSON.parse(String(raw)) as GatewayCommand;
+      } catch {
+        socket.send(JSON.stringify({ type: "error", error: "invalid command" } satisfies GatewayMessage));
+        return;
+      }
+      if (command.type === "start") {
+        if (!command.playbookId) {
+          socket.send(JSON.stringify({ type: "error", error: "playbookId required" } satisfies GatewayMessage));
+          return;
+        }
+        void startRun(command.playbookId, command.goal).catch((error: unknown) => {
+          socket.send(
+            JSON.stringify({
+              type: "error",
+              error: error instanceof Error ? error.message : String(error),
+            } satisfies GatewayMessage),
+          );
+        });
+        return;
+      }
+      if (command.type === "stop") {
+        void stopRun(command.runId ?? currentRunId).then((stopped) => {
+          if (!stopped) {
+            socket.send(JSON.stringify({ type: "error", error: "run not found" } satisfies GatewayMessage));
+          }
+        });
+      }
+    });
     socket.on("close", () => {
       sockets.delete(socket);
     });

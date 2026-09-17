@@ -57,6 +57,7 @@ export interface Character {
   parentId?: string;
   currentTool?: string;
   bubble?: string;
+  blocked?: boolean;
   targetTile?: { x: number; y: number };
 }
 

@@ -139,7 +139,7 @@ export function InspectionDrawer({
           <h2>Thought stream</h2>
           <div className="stat-row">
             <strong>{selected.name}</strong>
-            <span>{selected.kind}</span>
+            <span className={`kind-tag ${selected.kind}`}>{selected.kind}</span>
           </div>
         </div>
         <button type="button" onClick={onClose}>
@@ -149,8 +149,15 @@ export function InspectionDrawer({
       <p className="muted">{selected.role}</p>
       <p>
         {selected.activity} · {selected.currentTool || "no tool"}
+        {selected.parentId ? ` · parent ${selected.parentId}` : " · root"}
       </p>
       <p className="step">{selected.currentStep}</p>
+      {selected.lastToolInput !== undefined ? (
+        <pre className="scratchpad">Tool args: {JSON.stringify(selected.lastToolInput)}</pre>
+      ) : null}
+      {selected.lastArtifact !== undefined ? (
+        <pre className="scratchpad">Last artifact: {JSON.stringify(selected.lastArtifact)}</pre>
+      ) : null}
       <p className="envelope">Envelope: {selected.envelope.originalGoal}</p>
       <p className="muted">Quality bar: {selected.envelope.qualityBar}</p>
       <ul className="constraints">

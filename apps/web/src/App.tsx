@@ -8,6 +8,7 @@ import { useSwarmSocket } from "./useSwarmSocket";
 export function App() {
   const { snapshot, connected, liveModel, error, start, stop } = useSwarmSocket();
   const [playbookId, setPlaybookId] = useState(playbooks[0].id);
+  const [goal, setGoal] = useState(playbooks[0].trigger);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const running = snapshot.status === "running";
 
@@ -20,7 +21,7 @@ export function App() {
     if (running) return;
     setSelectedId(null);
     try {
-      await start(playbookId);
+      await start(playbookId, goal);
     } catch (err) {
       console.error(err);
     }
@@ -38,7 +39,12 @@ export function App() {
           <select
             value={playbookId}
             disabled={running}
-            onChange={(event) => setPlaybookId(event.target.value)}
+            onChange={(event) => {
+              const nextId = event.target.value;
+              setPlaybookId(nextId);
+              const next = playbooks.find((playbook) => playbook.id === nextId);
+              if (next) setGoal(next.trigger);
+            }}
           >
             {playbooks.map((playbook) => (
               <option key={playbook.id} value={playbook.id}>
@@ -46,6 +52,16 @@ export function App() {
               </option>
             ))}
           </select>
+        </label>
+        <label className="picker goal-picker">
+          Brief
+          <input
+            type="text"
+            value={goal}
+            disabled={running}
+            onChange={(event) => setGoal(event.target.value)}
+            aria-label="Run brief"
+          />
         </label>
         <div className="actions">
           <button type="button" className="primary" onClick={() => void onStart()} disabled={running}>

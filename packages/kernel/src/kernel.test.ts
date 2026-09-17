@@ -23,6 +23,18 @@ describe("SwarmKernel", () => {
     );
     expect(despawns.length).toBe(subSpawns.length);
     expect(subSpawns.length).toBe(2);
+    expect(kernel.log.events.some((event) => event.type === "subagent.spawned")).toBe(true);
+    expect(
+      kernel.log.events.some(
+        (event) => event.type === "subagent.completed" || event.type === "subagent.terminated",
+      ),
+    ).toBe(true);
+    expect(kernel.log.events.some((event) => event.type === "task.delegated")).toBe(true);
+    expect(kernel.log.events.some((event) => event.type === "orchestrator.review")).toBe(true);
+    const architecture = snap.agents.find((agent) => agent.id === "architecture");
+    const backend = snap.agents.find((agent) => agent.id === "backend");
+    expect(architecture?.parentId).toBe("meta");
+    expect(backend?.parentId).toBe("architecture");
   });
 
   it("trips the infinite handoff guard and lets meta override", async () => {
@@ -125,6 +137,94 @@ describe("SwarmKernel", () => {
     expect(agent?.thoughts[0]?.delta).toBe("hmm");
     expect(agent?.scratchpad).toBe("sys");
     expect(snap.votes[0]?.vote).toBe("reject");
+  });
+
+  it("spawn_subagent returns the child artifact and emits lifecycle events", async () => {
+    const kernel = new SwarmKernel();
+    const envelope = { originalGoal: "summarize", qualityBar: "brief", constraints: ["keep goal"] };
+    const playbook = {
+      id: "spawn-return",
+      name: "Spawn return",
+      trigger: "summarize",
+      layoutId: "feature-dev",
+      qualityBar: "brief",
+      constraints: ["keep goal"],
+      budget: {
+        tokensLimit: 1000,
+        wallClockLimitMs: 10_000,
+        maxLiveAgents: 8,
+        maxConcurrentSubagents: 2,
+        maxVisibleSubagents: 2,
+        maxHandoffHops: 3,
+        subagentTtlMs: 5_000,
+      },
+      domains: [{ id: "lab", name: "Lab", orchestratorId: "orch" }],
+      agents: [
+        { id: "meta", name: "Meta", kind: "meta" as const, role: "root", stationId: "hq", hue: 40 },
+        {
+          id: "orch",
+          name: "Orch",
+          kind: "domain-orchestrator" as const,
+          domainId: "lab",
+          role: "orch",
+          stationId: "desk-arch",
+          hue: 200,
+        },
+        {
+          id: "worker",
+          name: "Worker",
+          kind: "worker" as const,
+          domainId: "lab",
+          role: "parent",
+          stationId: "terminal-backend",
+          hue: 120,
+        },
+      ],
+      tasks: [
+        {
+          id: "parent-task",
+          title: "Spawn a summarizer",
+          assignee: "worker",
+          domainId: "lab",
+          dependsOn: [],
+          toolId: "parent-tool",
+          activity: "thinking" as const,
+        },
+      ],
+      adapters: [
+        {
+          id: "parent-tool",
+          async execute(_input: unknown, _env: typeof envelope, _signal: AbortSignal, ctx?: { spawnSubagent?: (def: { id: string; name: string; toolId: string }) => Promise<unknown> }) {
+            const artifact = await ctx?.spawnSubagent?.({
+              id: "child",
+              name: "Summarizer",
+              toolId: "child-tool",
+            });
+            return { tokens: 2, latencyMs: 0, artifact };
+          },
+        },
+        {
+          id: "child-tool",
+          async execute() {
+            return { tokens: 3, latencyMs: 0, artifact: { summarized: true, lines: 50 } };
+          },
+        },
+      ],
+    };
+    await kernel.start(playbook, { timeScale: 200, simulatedDuplicates: false });
+    const completed = kernel.log.events.find((event) => event.type === "subagent.completed");
+    expect(completed?.type).toBe("subagent.completed");
+    if (completed?.type === "subagent.completed") {
+      expect(completed.parentAgentId).toBe("worker");
+      expect(completed.artifact).toEqual({ summarized: true, lines: 50 });
+    }
+    const parentStep = kernel.log.events.find(
+      (event) => event.type === "agent.step" && event.agentId === "worker" && event.step === "parent-tool returned",
+    );
+    expect(parentStep?.type).toBe("agent.step");
+    if (parentStep?.type === "agent.step") {
+      expect(parentStep.payload).toContain("summarized");
+    }
   });
 
   it("replays the event log to the same snapshot", async () => {

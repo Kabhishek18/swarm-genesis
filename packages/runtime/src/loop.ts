@@ -25,12 +25,17 @@ export function assemblePrompt(input: LoopInput): { system: string; user: string
   return { system, user };
 }
 
+export interface LoopOptions {
+  maxTurns?: number;
+}
+
 export async function runOllamaLoop(
   chat: OllamaChat,
   loop: LoopInput,
   ctx: ToolContext | undefined,
   signal: AbortSignal,
   fetchImpl: typeof fetch = fetch,
+  options: LoopOptions = {},
 ): Promise<ToolResult> {
   const { system, user } = assemblePrompt(loop);
   ctx?.onScratchpad?.(`${system}\n\n${user}`);
@@ -42,8 +47,9 @@ export async function runOllamaLoop(
 
   let tokens = 0;
   let artifact: unknown = { ok: true, task: loop.task };
+  const maxTurns = options.maxTurns ?? MAX_TOOL_TURNS;
 
-  for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+  for (let turn = 0; turn < maxTurns; turn++) {
     const result = await chat.chat(
       messages,
       OLLAMA_TOOLS,

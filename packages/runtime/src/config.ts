@@ -17,3 +17,4 @@ export function ollamaDisabled(): boolean {
 export const FETCH_TIMEOUT_MS = 8_000;
 export const FETCH_SIZE_CAP = 64_000;
 export const MAX_TOOL_TURNS = 6;
+export const CHILD_LOOP_MAX_STEPS = 3;

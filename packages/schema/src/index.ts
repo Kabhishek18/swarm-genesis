@@ -78,12 +78,18 @@ export interface AgentDef {
   hue: number;
 }
 
+/** Reserved adapter id for isolated child Ollama loops (no playbook toolId). */
+export const CHILD_LOOP_TOOL_ID = "__child_loop__";
+
 export interface SubagentDef {
   id: string;
   name: string;
-  toolId: string;
+  toolId?: string;
   toolInput?: unknown;
   stationId?: string;
+  taskDescription?: string;
+  role?: string;
+  contextPayload?: string;
 }
 
 export interface HandoffDef {

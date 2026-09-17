@@ -11,7 +11,7 @@ import type {
   ToolAdapter,
   ToolContext,
 } from "@swarm/schema";
-import { hashArtifact } from "@swarm/schema";
+import { CHILD_LOOP_TOOL_ID, hashArtifact } from "@swarm/schema";
 import { EventLog, type EventListener } from "./event-log.js";
 
 export interface ReviewInput {
@@ -69,6 +69,18 @@ function requireEnvelope(envelope: ConstraintEnvelope): void {
   if (!envelope.originalGoal.trim()) {
     throw new Error("ConstraintEnvelope missing originalGoal");
   }
+}
+
+function childLoopInput(sub: SubagentDef, toolId: string): unknown {
+  if (toolId !== CHILD_LOOP_TOOL_ID) return sub.toolInput;
+  const extra: Record<string, unknown> = {};
+  if (sub.taskDescription != null) extra.taskDescription = sub.taskDescription;
+  if (sub.role != null) extra.role = sub.role;
+  if (sub.contextPayload != null) extra.contextPayload = sub.contextPayload;
+  if (sub.toolInput && typeof sub.toolInput === "object") {
+    return { ...(sub.toolInput as Record<string, unknown>), ...extra };
+  }
+  return extra;
 }
 
 export function simulatedReviewer(): Reviewer {
@@ -725,7 +737,7 @@ export class SwarmKernel {
       kind: "subagent",
       domainId: parent.domainId,
       parentId: parent.id,
-      role: "ephemeral-tool",
+      role: sub.role ?? "ephemeral-tool",
       stationId: sub.stationId ?? parent.stationId,
       activity: "fetching",
       hue: (parent.hue + 40) % 360,
@@ -756,7 +768,9 @@ export class SwarmKernel {
     let artifact: unknown = null;
     let ended: "complete" | "ttl" | "stop" = "complete";
     try {
-      artifact = await this.runTool(agent.id, sub.toolId, sub.toolInput, envelope, ttlAbort.signal);
+      const toolId = sub.toolId?.trim() || CHILD_LOOP_TOOL_ID;
+      const toolInput = childLoopInput(sub, toolId);
+      artifact = await this.runTool(agent.id, toolId, toolInput, envelope, ttlAbort.signal);
       this.emit({
         type: "subagent.completed",
         agentId: agent.id,

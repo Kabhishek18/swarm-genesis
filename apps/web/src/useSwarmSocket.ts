@@ -84,7 +84,7 @@ export function useSwarmSocket() {
     setError(null);
     const socket = wsRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "start", playbookId, goal }));
+      socket.send(JSON.stringify({ type: "START_RUN", playbookId, prompt: goal, goal }));
       return;
     }
     const response = await fetch("/api/runs", {

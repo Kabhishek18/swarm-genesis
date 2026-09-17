@@ -1,6 +1,6 @@
 import type { Reviewer } from "@swarm/kernel";
-import type { Playbook, ToolAdapter, ToolContext, ToolResult } from "@swarm/schema";
-import { ollamaDisabled } from "./config.js";
+import { CHILD_LOOP_TOOL_ID, type Playbook, type ToolAdapter, type ToolContext, type ToolResult } from "@swarm/schema";
+import { CHILD_LOOP_MAX_STEPS, ollamaDisabled } from "./config.js";
 import { assemblePrompt, runOllamaLoop } from "./loop.js";
 import { OllamaChat } from "./ollama.js";
 
@@ -74,13 +74,107 @@ export async function wrapPlaybook(playbook: Playbook, options: BindOptions = {}
 }> {
   const chat = options.chat ?? new OllamaChat({ fetchImpl: options.fetchImpl });
   const live = await ollamaAvailable(chat);
+  const adapters = playbook.adapters.map((adapter) => wrapAdapter(adapter, chat, live));
+  if (!adapters.some((adapter) => adapter.id === CHILD_LOOP_TOOL_ID)) {
+    adapters.push(childLoopAdapter(chat, live));
+  }
   return {
     live,
     playbook: {
       ...playbook,
-      adapters: playbook.adapters.map((adapter) => wrapAdapter(adapter, chat, live)),
+      adapters,
     },
     reviewer: live ? ollamaReviewer(chat) : simulatedDuplicateReviewer(),
+  };
+}
+
+function childLoopPayload(input: unknown): {
+  taskDescription: string;
+  role: string;
+  contextPayload?: string;
+} {
+  const rec = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  return {
+    taskDescription: rec.taskDescription != null ? String(rec.taskDescription) : "",
+    role: rec.role != null && String(rec.role).trim() ? String(rec.role) : "researcher",
+    contextPayload: rec.contextPayload != null ? String(rec.contextPayload) : undefined,
+  };
+}
+
+export function childLoopAdapter(chat: OllamaChat, live: boolean): ToolAdapter {
+  return {
+    id: CHILD_LOOP_TOOL_ID,
+    async execute(input, envelope, signal, ctx?: ToolContext): Promise<ToolResult> {
+      const payload = childLoopPayload(input);
+      const role = payload.role || ctx?.role || "researcher";
+      const task = payload.taskDescription || "Complete the delegated sub-task";
+      const loop = {
+        role,
+        task,
+        input: {
+          contextPayload: payload.contextPayload,
+          originalGoal: envelope.originalGoal,
+        },
+        envelope,
+      };
+      if (!live) {
+        const prompt = assemblePrompt(loop);
+        ctx?.onScratchpad?.(`${prompt.system}\n\n${prompt.user}`);
+        ctx?.onThought?.(`simulated:${role}`);
+        return {
+          tokens: 48,
+          latencyMs: 0,
+          artifact: {
+            summary: `simulated ${role} completed: ${task}`,
+            role,
+            taskDescription: task,
+            contextPayload: payload.contextPayload ?? null,
+            originalGoal: envelope.originalGoal,
+          },
+        };
+      }
+      try {
+        const result = await runOllamaLoop(chat, loop, ctx, signal, chat.fetchImpl, {
+          maxTurns: CHILD_LOOP_MAX_STEPS,
+        });
+        return {
+          ...result,
+          artifact: summarizeChildArtifact(result.artifact, role, task, envelope.originalGoal, payload.contextPayload),
+        };
+      } catch (error) {
+        ctx?.onThought?.(
+          `ollama-fallback:${error instanceof Error ? error.message : String(error)}`,
+        );
+        return childLoopAdapter(chat, false).execute(input, envelope, signal, ctx);
+      }
+    },
+  };
+}
+
+function summarizeChildArtifact(
+  artifact: unknown,
+  role: string,
+  task: string,
+  originalGoal: string,
+  contextPayload?: string,
+): Record<string, unknown> {
+  const base = {
+    role,
+    taskDescription: task,
+    contextPayload: contextPayload ?? null,
+    originalGoal,
+  };
+  if (artifact && typeof artifact === "object") {
+    const rec = artifact as Record<string, unknown>;
+    return {
+      ...rec,
+      ...base,
+      summary: rec.summary != null ? String(rec.summary) : JSON.stringify(artifact),
+    };
+  }
+  return {
+    ...base,
+    summary: artifact == null ? `completed: ${task}` : String(artifact),
   };
 }
 

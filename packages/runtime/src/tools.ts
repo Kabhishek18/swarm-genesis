@@ -1,4 +1,4 @@
-import type { SubagentDef, ToolContext } from "@swarm/schema";
+import { CHILD_LOOP_TOOL_ID, type SubagentDef, type ToolContext } from "@swarm/schema";
 import type { OllamaToolDef } from "./ollama.js";
 import { FETCH_SIZE_CAP, FETCH_TIMEOUT_MS } from "./config.js";
 
@@ -46,7 +46,8 @@ export const OLLAMA_TOOLS: OllamaToolDef[] = [
     type: "function",
     function: {
       name: "spawn_subagent",
-      description: "Request an ephemeral sub-agent. The kernel still enforces TTL and spawn caps.",
+      description:
+        "Request an ephemeral sub-agent. Pass a playbook toolId, or taskDescription+role for an isolated child loop. The kernel still enforces TTL and spawn caps.",
       parameters: {
         type: "object",
         properties: {
@@ -55,8 +56,10 @@ export const OLLAMA_TOOLS: OllamaToolDef[] = [
           toolId: { type: "string" },
           toolInput: { type: "object" },
           stationId: { type: "string" },
+          taskDescription: { type: "string" },
+          role: { type: "string" },
+          contextPayload: { type: "string" },
         },
-        required: ["id", "name", "toolId"],
       },
     },
   },
@@ -85,18 +88,66 @@ export async function executeCappedTool(
       return { written: true, bytes: note.length };
     }
     case "spawn_subagent": {
-      const def: SubagentDef = {
-        id: String(args.id ?? `sub-${Date.now()}`),
-        name: String(args.name ?? "subagent"),
-        toolId: String(args.toolId ?? ""),
-        toolInput: args.toolInput,
-        stationId: args.stationId ? String(args.stationId) : undefined,
-      };
+      const def = buildSubagentDef(args);
       const artifact = await ctx?.spawnSubagent?.(def);
-      return { spawned: def.id, name: def.name, artifact: artifact ?? null };
+      return {
+        spawned: def.id,
+        name: def.name,
+        role: def.role ?? null,
+        parentAgentId: ctx?.agentId ?? null,
+        summary: childSummary(artifact),
+        artifact: artifact ?? null,
+      };
     }
     default:
       throw new Error(`Tool ${name} is not implemented`);
+  }
+}
+
+function optionalString(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const text = String(value);
+  return text.trim() ? text : undefined;
+}
+
+export function buildSubagentDef(args: Record<string, unknown>): SubagentDef {
+  const taskDescription = optionalString(args.taskDescription);
+  const role = optionalString(args.role);
+  const contextPayload = optionalString(args.contextPayload);
+  const playbookToolId = optionalString(args.toolId);
+  const useChildLoop = Boolean(taskDescription || role) && !playbookToolId;
+  if (!playbookToolId && !useChildLoop) {
+    throw new Error("spawn_subagent requires toolId or taskDescription/role");
+  }
+  return {
+    id: String(args.id ?? `sub-${Date.now()}`),
+    name: String(args.name ?? role ?? "subagent"),
+    toolId: useChildLoop ? CHILD_LOOP_TOOL_ID : playbookToolId,
+    toolInput: useChildLoop
+      ? {
+          taskDescription: taskDescription ?? "",
+          role: role ?? "researcher",
+          contextPayload,
+        }
+      : args.toolInput,
+    stationId: optionalString(args.stationId),
+    taskDescription,
+    role,
+    contextPayload,
+  };
+}
+
+function childSummary(artifact: unknown): string {
+  if (artifact == null) return "";
+  if (typeof artifact === "string") return artifact;
+  if (typeof artifact === "object" && "summary" in artifact) {
+    const summary = (artifact as { summary: unknown }).summary;
+    if (summary != null) return String(summary);
+  }
+  try {
+    return JSON.stringify(artifact);
+  } catch {
+    return String(artifact);
   }
 }
 

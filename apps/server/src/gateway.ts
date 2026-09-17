@@ -16,9 +16,11 @@ export interface GatewayMessage {
 }
 
 export interface GatewayCommand {
-  type: "start" | "stop";
+  type: "start" | "stop" | "START_RUN";
   playbookId?: string;
   goal?: string;
+  prompt?: string;
+  orchestrator?: string;
   runId?: string;
 }
 
@@ -62,6 +64,43 @@ export async function buildGateway(store: EventStore): Promise<FastifyInstance> 
       broadcast({ type: "snapshot", snapshot: live.kernel.getSnapshot(), runId: live.id });
     }, 1000);
   };
+
+  function resolvePlaybookId(playbookId?: string, orchestrator?: string): string {
+    const requested = playbookId?.trim();
+    if (requested) {
+      try {
+        getPlaybook(requested);
+        return requested;
+      } catch {
+        /* fall through to orchestrator / default */
+      }
+    }
+    const orch = orchestrator?.trim();
+    if (orch) {
+      try {
+        getPlaybook(orch);
+        return orch;
+      } catch {
+        /* map role aliases onto existing playbooks */
+      }
+      const lower = orch.toLowerCase();
+      if (lower === "lead_architect" || lower === "architecture" || lower === "meta") {
+        return "feature-dev";
+      }
+      const matched = playbooks.find(
+        (item) =>
+          item.domains.some((domain) => domain.id === orch || domain.orchestratorId === orch) ||
+          item.agents.some((agent) => agent.id === orch),
+      );
+      if (matched) return matched.id;
+    }
+    return "feature-dev";
+  }
+
+  function resolveStart(command: GatewayCommand): { playbookId: string; goal?: string } {
+    const goal = (command.prompt ?? command.goal)?.trim() || undefined;
+    return { playbookId: resolvePlaybookId(command.playbookId, command.orchestrator), goal };
+  }
 
   app.get("/api/playbooks", async () => ({
     playbooks: playbooks.map((item) => ({ id: item.id, name: item.name })),
@@ -190,12 +229,13 @@ export async function buildGateway(store: EventStore): Promise<FastifyInstance> 
         socket.send(JSON.stringify({ type: "error", error: "invalid command" } satisfies GatewayMessage));
         return;
       }
-      if (command.type === "start") {
-        if (!command.playbookId) {
+      if (command.type === "start" || command.type === "START_RUN") {
+        if (command.type === "start" && !command.playbookId) {
           socket.send(JSON.stringify({ type: "error", error: "playbookId required" } satisfies GatewayMessage));
           return;
         }
-        void startRun(command.playbookId, command.goal).catch((error: unknown) => {
+        const resolved = resolveStart(command);
+        void startRun(resolved.playbookId, resolved.goal).catch((error: unknown) => {
           socket.send(
             JSON.stringify({
               type: "error",

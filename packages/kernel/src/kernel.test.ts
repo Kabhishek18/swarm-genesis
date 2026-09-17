@@ -54,6 +54,79 @@ describe("SwarmKernel", () => {
     expect(snap.budget.tokensUsed).toBeGreaterThan(20_000);
   });
 
+  it("trips the breaker when review votes keep rejecting the same artifact", async () => {
+    const kernel = new SwarmKernel();
+    const playbook = {
+      ...featureDevPlaybook,
+      tasks: featureDevPlaybook.tasks.map((task) =>
+        task.id === "quality-pingpong" && task.handoff
+          ? { ...task, handoff: { ...task.handoff, duplicate: false } }
+          : task,
+      ),
+    };
+    await kernel.start(playbook, {
+      timeScale: 200,
+      simulatedDuplicates: false,
+      reviewer: {
+        async review() {
+          return { vote: "reject", reason: "quality bar missed" };
+        },
+      },
+    });
+    const snap = kernel.getSnapshot();
+    expect(snap.votes.some((vote) => vote.vote === "reject")).toBe(true);
+    expect(snap.alerts.some((alert) => alert.code === "handoff-loop")).toBe(true);
+    expect(snap.status).toBe("completed");
+  });
+
+  it("projects thought, scratchpad, and vote events", () => {
+    let snap = emptySnapshot();
+    snap = applyEvent(snap, {
+      type: "run.started",
+      runId: "run-1",
+      playbookId: "p",
+      playbookName: "P",
+      layoutId: "p",
+      goal: "g",
+      envelope: { originalGoal: "g", qualityBar: "q", constraints: [] },
+      budget: emptySnapshot().budget,
+      at: 1,
+    });
+    snap = applyEvent(snap, {
+      type: "agent.spawned",
+      agent: {
+        id: "a",
+        name: "A",
+        kind: "worker",
+        role: "r",
+        stationId: "s",
+        activity: "thinking",
+        hue: 1,
+        envelope: { originalGoal: "g", qualityBar: "q", constraints: [] },
+        steps: [],
+        thoughts: [],
+        children: [],
+        spawnedAt: 1,
+        visible: true,
+      },
+      at: 2,
+    });
+    snap = applyEvent(snap, { type: "agent.thought", agentId: "a", delta: "hmm", at: 3 });
+    snap = applyEvent(snap, { type: "agent.scratchpad", agentId: "a", prompt: "sys", at: 4 });
+    snap = applyEvent(snap, {
+      type: "task.vote",
+      taskId: "t",
+      voterId: "a",
+      vote: "reject",
+      reason: "nope",
+      at: 5,
+    });
+    const agent = snap.agents[0];
+    expect(agent?.thoughts[0]?.delta).toBe("hmm");
+    expect(agent?.scratchpad).toBe("sys");
+    expect(snap.votes[0]?.vote).toBe("reject");
+  });
+
   it("replays the event log to the same snapshot", async () => {
     const kernel = new SwarmKernel();
     await kernel.start(featureDevPlaybook, { timeScale: 200 });

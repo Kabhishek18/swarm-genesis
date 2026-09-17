@@ -8,16 +8,16 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev -w @swarm/web",
+    "dev": "concurrently -k -n server,web -c cyan,magenta \"npm run dev -w @swarm/server\" \"npm run dev -w @swarm/web\"",
     "build": "npm run build -w @swarm/web",
-    "test": "npm run test -w @swarm/kernel",
+    "test": "npm run test -w @swarm/kernel && npm run test -w @swarm/runtime && npm run test -w @swarm/server",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
+    "concurrently": "^9.2.1",
     "typescript": "^5.9.2"
   }
 }
-

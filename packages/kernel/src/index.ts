@@ -9,14 +9,37 @@ import type {
   TaskDef,
   TaskSnapshot,
   ToolAdapter,
+  ToolContext,
 } from "@swarm/schema";
 import { hashArtifact } from "@swarm/schema";
 import { EventLog, type EventListener } from "./event-log.js";
+
+export interface ReviewInput {
+  artifact: unknown;
+  envelope: ConstraintEnvelope;
+  qualityBar: string;
+  taskTitle: string;
+  from: string;
+  to: string;
+}
+
+export interface ReviewDecision {
+  vote: "accept" | "reject";
+  reason: string;
+}
+
+export interface Reviewer {
+  review(input: ReviewInput, signal: AbortSignal): Promise<ReviewDecision>;
+}
 
 export interface KernelOptions {
   /** Divides simulated tool latency. Tests use a large scale. */
   timeScale?: number;
   now?: () => number;
+  runId?: string;
+  reviewer?: Reviewer;
+  /** When true (default), `handoff.duplicate` forces identical hashes so the breaker can demo. */
+  simulatedDuplicates?: boolean;
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -48,6 +71,17 @@ function requireEnvelope(envelope: ConstraintEnvelope): void {
   }
 }
 
+export function simulatedReviewer(): Reviewer {
+  return {
+    async review(input) {
+      return {
+        vote: "accept",
+        reason: `Meets quality bar: ${input.qualityBar.slice(0, 80)}`,
+      };
+    },
+  };
+}
+
 export class SwarmKernel {
   readonly log = new EventLog();
   private adapters = new Map<string, ToolAdapter>();
@@ -62,6 +96,10 @@ export class SwarmKernel {
   private tickTimer?: ReturnType<typeof setInterval>;
   private subagentWaiters: Array<() => void> = [];
   private subagentSlots = 0;
+  private playbook?: Playbook;
+  private envelope?: ConstraintEnvelope;
+  private reviewer: Reviewer = simulatedReviewer();
+  private simulatedDuplicates = true;
 
   subscribe(listener: EventListener): () => void {
     return this.log.subscribe(listener);
@@ -83,6 +121,7 @@ export class SwarmKernel {
     this.stop();
     this.log.reset();
     this.adapters = new Map(playbook.adapters.map((adapter) => [adapter.id, adapter]));
+    this.playbook = playbook;
     this.busy.clear();
     this.inFlight.clear();
     this.handoffHops.clear();
@@ -91,6 +130,8 @@ export class SwarmKernel {
     this.subagentSlots = 0;
     this.timeScale = options.timeScale ?? 1;
     this.clock = options.now ?? Date.now;
+    this.reviewer = options.reviewer ?? simulatedReviewer();
+    this.simulatedDuplicates = options.simulatedDuplicates ?? true;
     this.abort = new AbortController();
     const signal = this.abort.signal;
     this.startedAt = this.clock();
@@ -101,6 +142,7 @@ export class SwarmKernel {
       constraints: playbook.constraints,
     };
     requireEnvelope(envelope);
+    this.envelope = envelope;
 
     const budget: Budget = {
       ...playbook.budget,
@@ -112,7 +154,7 @@ export class SwarmKernel {
 
     this.emit({
       type: "run.started",
-      runId: `run-${this.startedAt}`,
+      runId: options.runId ?? `run-${this.startedAt}`,
       playbookId: playbook.id,
       playbookName: playbook.name,
       layoutId: playbook.layoutId,
@@ -198,6 +240,8 @@ export class SwarmKernel {
       hue: def.hue,
       envelope: { ...envelope, constraints: [...envelope.constraints] },
       steps: [`spawned as ${def.role}`],
+      thoughts: [],
+      children: [],
       spawnedAt: this.clock(),
       visible: true,
     };
@@ -297,7 +341,8 @@ export class SwarmKernel {
       if (this.inFlight.size === 0) {
         const tasks = this.log.getSnapshot().tasks;
         const unfinished = tasks.filter(
-          (task) => task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled",
+          (task) =>
+            task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled",
         );
         if (unfinished.length === 0) return;
         const blocked = unfinished.every((task) => task.status === "locked");
@@ -396,7 +441,14 @@ export class SwarmKernel {
       }
 
       if (task.toolId) {
-        artifact = await this.runTool(agent.id, task.toolId, task.toolInput, envelope, signal);
+        artifact = await this.runTool(
+          agent.id,
+          task.toolId,
+          task.toolInput,
+          envelope,
+          signal,
+          task.id,
+        );
       } else {
         await this.delay(task.review ? 800 : 600, signal);
       }
@@ -411,14 +463,17 @@ export class SwarmKernel {
           at: this.clock(),
         });
         await Promise.all(
-          task.subagents.map((sub) =>
-            this.runSubagent(playbook, agent, sub, envelope, signal),
-          ),
+          task.subagents.map((sub) => this.runSubagent(playbook, agent, sub, envelope, signal)),
         );
       }
 
       if (task.handoff) {
         artifact = await this.handleHandoff(playbook, task, agent.id, artifact, envelope, signal);
+      } else if (task.review) {
+        await this.emitVote(task, agent.id, {
+          vote: "accept",
+          reason: "Merge gate cleared",
+        });
       }
 
       this.emit({
@@ -461,14 +516,15 @@ export class SwarmKernel {
   ): Promise<unknown> {
     const handoff = task.handoff;
     if (!handoff) return artifact;
-    const attempts = handoff.duplicate ? this.log.getSnapshot().budget.maxHandoffHops : 1;
+    const maxAttempts = this.log.getSnapshot().budget.maxHandoffHops + 1;
     let lastArtifact = artifact;
-    for (let i = 0; i < attempts; i++) {
+    for (let i = 0; i < maxAttempts; i++) {
+      const forceDuplicate = Boolean(handoff.duplicate && this.simulatedDuplicates);
       lastArtifact = await this.emitHandoffAttempt(
         playbook,
         task,
         from,
-        handoff.duplicate ? { ping: "same-revision" } : lastArtifact,
+        forceDuplicate ? { ping: "same-revision" } : lastArtifact,
         envelope,
         signal,
       );
@@ -476,8 +532,60 @@ export class SwarmKernel {
         .getSnapshot()
         .handoffs.some((item) => item.taskId === task.id && item.rejected);
       if (rejected) break;
+
+      const decision = await this.reviewHandoff(
+        playbook,
+        task,
+        from,
+        lastArtifact,
+        envelope,
+        signal,
+      );
+      await this.emitVote(task, handoff.to, decision);
+      if (decision.vote === "accept") return lastArtifact;
     }
     return lastArtifact;
+  }
+
+  private async reviewHandoff(
+    playbook: Playbook,
+    task: TaskDef,
+    from: string,
+    artifact: unknown,
+    envelope: ConstraintEnvelope,
+    signal: AbortSignal,
+  ): Promise<ReviewDecision> {
+    const handoff = task.handoff;
+    if (!handoff) return { vote: "accept", reason: "no handoff" };
+    if (handoff.duplicate && this.simulatedDuplicates) {
+      return { vote: "reject", reason: "Identical output bounced back for review" };
+    }
+    return this.reviewer.review(
+      {
+        artifact,
+        envelope,
+        qualityBar: playbook.qualityBar,
+        taskTitle: task.title,
+        from,
+        to: handoff.to,
+      },
+      signal,
+    );
+  }
+
+  private async emitVote(
+    task: TaskDef,
+    voterId: string,
+    decision: ReviewDecision,
+  ): Promise<void> {
+    this.emit({
+      type: "task.vote",
+      taskId: task.id,
+      voterId,
+      vote: decision.vote,
+      reason: decision.reason,
+      at: this.clock(),
+    });
   }
 
   private async emitHandoffAttempt(
@@ -517,7 +625,7 @@ export class SwarmKernel {
         "handoff-loop",
         "critical",
         duplicate
-          ? `Infinite handoff loop on ${task.title}: identical output bounced ${from} ↔ ${handoff.to}`
+          ? `Infinite handoff loop on ${task.title}: identical output bounced ${from} -> ${handoff.to}`
           : `Handoff hop ${hop} exceeded cap ${maxHops} on ${task.title}`,
         [from, handoff.to],
       );
@@ -576,7 +684,9 @@ export class SwarmKernel {
     requireEnvelope(envelope);
     await this.acquireSubagentSlot(signal);
     const snapshot = this.log.getSnapshot();
-    const visibleCount = snapshot.agents.filter((agent) => agent.kind === "subagent" && agent.visible).length;
+    const visibleCount = snapshot.agents.filter(
+      (agent) => agent.kind === "subagent" && agent.visible,
+    ).length;
     const visible = visibleCount < snapshot.budget.maxVisibleSubagents;
     if (!visible) {
       this.alert(
@@ -599,6 +709,8 @@ export class SwarmKernel {
       hue: (parent.hue + 40) % 360,
       envelope: { ...envelope, constraints: [...envelope.constraints] },
       steps: [`spawned by ${parent.name}`],
+      thoughts: [],
+      children: [],
       spawnedAt: this.clock(),
       visible,
     };
@@ -656,18 +768,56 @@ export class SwarmKernel {
     next?.();
   }
 
+  private toolContext(
+    agentId: string,
+    envelope: ConstraintEnvelope,
+    signal: AbortSignal,
+    taskId?: string,
+  ): ToolContext {
+    const snap = this.log.getSnapshot().agents.find((agent) => agent.id === agentId);
+    return {
+      agentId,
+      taskId,
+      role: snap?.role,
+      onThought: (delta) => {
+        if (!delta) return;
+        this.emit({ type: "agent.thought", agentId, delta, at: this.clock() });
+      },
+      onScratchpad: (prompt) => {
+        this.emit({ type: "agent.scratchpad", agentId, prompt, at: this.clock() });
+      },
+      spawnSubagent: async (def) => {
+        const playbook = this.playbook;
+        const env = this.envelope ?? envelope;
+        if (!playbook) throw new Error("No playbook bound for spawn_subagent");
+        const parentDef: AgentDef = {
+          id: snap?.id ?? agentId,
+          name: snap?.name ?? agentId,
+          kind: snap?.kind === "meta" ? "meta" : snap?.kind === "domain-orchestrator" ? "domain-orchestrator" : "worker",
+          domainId: snap?.domainId,
+          role: snap?.role ?? "worker",
+          stationId: snap?.stationId ?? "hq",
+          hue: snap?.hue ?? 0,
+        };
+        await this.runSubagent(playbook, parentDef, def, env, signal);
+      },
+    };
+  }
+
   private async runTool(
     agentId: string,
     toolId: string,
     input: unknown,
     envelope: ConstraintEnvelope,
     signal: AbortSignal,
+    taskId?: string,
   ): Promise<unknown> {
     const adapter = this.adapters.get(toolId);
     if (!adapter) throw new Error(`Unknown tool ${toolId}`);
     requireEnvelope(envelope);
     this.emit({ type: "agent.tool.started", agentId, toolId, input, at: this.clock() });
-    const result = await adapter.execute(input, envelope, signal);
+    const ctx = this.toolContext(agentId, envelope, signal, taskId);
+    const result = await adapter.execute(input, envelope, signal, ctx);
     await this.delay(result.latencyMs, signal);
     const snapshot = this.log.getSnapshot();
     this.emit({

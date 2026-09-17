@@ -1,53 +1,33 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { SwarmKernel } from "@swarm/kernel";
-import { emptySnapshot, type RunSnapshot } from "@swarm/schema";
-import { getPlaybook, playbooks } from "@swarm/playbooks";
+import { useMemo, useState } from "react";
+import { playbooks } from "@swarm/playbooks";
+import type { RunSnapshot } from "@swarm/schema";
 import { OfficeCanvas } from "./OfficeCanvas";
-import { Hud } from "./Hud";
+import { Hud, InspectionDrawer } from "./Hud";
+import { useSwarmSocket } from "./useSwarmSocket";
 
 export function App() {
-  const kernelRef = useRef<SwarmKernel | null>(null);
-  if (!kernelRef.current) kernelRef.current = new SwarmKernel();
-  const kernel = kernelRef.current;
-
+  const { snapshot, connected, liveModel, error, start, stop } = useSwarmSocket();
   const [playbookId, setPlaybookId] = useState(playbooks[0].id);
-  const [snapshot, setSnapshot] = useState<RunSnapshot>(emptySnapshot());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const running = snapshot.status === "running";
-
-  useEffect(() => {
-    return kernel.subscribe((_event, next) => {
-      setSnapshot({
-        ...next,
-        agents: [...next.agents],
-        tasks: [...next.tasks],
-        alerts: [...next.alerts],
-        domains: [...next.domains],
-        handoffs: [...next.handoffs],
-      });
-    });
-  }, [kernel]);
 
   const selected = useMemo(
     () => snapshot.agents.find((agent) => agent.id === selectedId) ?? null,
     [snapshot.agents, selectedId],
   );
 
-  async function start() {
+  async function onStart() {
     if (running) return;
-    const playbook = getPlaybook(playbookId);
     setSelectedId(null);
-    void kernel.start(playbook).catch((error: unknown) => {
-      console.error(error);
-    });
-  }
-
-  function stop() {
-    kernel.stop();
+    try {
+      await start(playbookId);
+    } catch (err) {
+      console.error(err);
+    }
   }
 
   return (
-    <div className="app">
+    <div className={selected ? "app inspecting" : "app"}>
       <header className="topbar">
         <div>
           <div className="brand">SWARM GENESIS</div>
@@ -68,22 +48,30 @@ export function App() {
           </select>
         </label>
         <div className="actions">
-          <button type="button" className="primary" onClick={start} disabled={running}>
+          <button type="button" className="primary" onClick={() => void onStart()} disabled={running}>
             Start run
           </button>
-          <button type="button" onClick={stop} disabled={!running}>
+          <button type="button" onClick={() => void stop()} disabled={!running}>
             Stop
           </button>
         </div>
+        <div className={`chip ${connected ? "ok" : "failed"}`}>{connected ? "gateway" : "offline"}</div>
+        <div className={`chip ${liveModel ? "running" : ""}`}>
+          {liveModel ? "ollama" : liveModel === false ? "simulated" : "runtime"}
+        </div>
         <StatusChip snapshot={snapshot} />
+        {error ? <div className="banner bad">{error}</div> : null}
       </header>
-      <Hud snapshot={snapshot} selected={selected} />
+      <Hud snapshot={snapshot} />
       <OfficeCanvas
         snapshot={snapshot}
         layoutId={snapshot.layoutId || playbookId}
         selectedId={selectedId}
         onSelect={setSelectedId}
       />
+      {selected ? (
+        <InspectionDrawer snapshot={snapshot} selected={selected} onClose={() => setSelectedId(null)} />
+      ) : null}
     </div>
   );
 }

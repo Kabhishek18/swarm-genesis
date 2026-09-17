@@ -3,7 +3,7 @@ import { simulatedAdapter } from "./adapters.js";
 
 const budget = {
   tokensLimit: 80_000,
-  wallClockLimitMs: 180_000,
+  wallClockLimitMs: 1_200_000,
   maxLiveAgents: 16,
   maxConcurrentSubagents: 4,
   maxVisibleSubagents: 6,

@@ -272,6 +272,28 @@ function drawCharacter(
   ctx.fillStyle = PALETTE.text;
   ctx.font = "6px monospace";
   ctx.fillText(character.name, x - 6, y - 4);
+
+  if (character.currentTool) {
+    const label = character.currentTool.slice(0, 10);
+    ctx.fillStyle = "#0b1220";
+    ctx.fillRect(x - 2, y - 16, label.length * 4 + 6, 8);
+    ctx.fillStyle = "#3d8bfd";
+    ctx.fillRect(x - 2, y - 16, 2, 8);
+    ctx.fillStyle = "#d7e0ea";
+    ctx.fillText(label, x + 2, y - 10);
+  }
+
+  if (character.bubble) {
+    const label = character.bubble;
+    const bx = character.currentTool ? x + 16 : x - 4;
+    const by = character.currentTool ? y - 6 : y - 22;
+    const w = Math.min(72, label.length * 4 + 8);
+    ctx.fillStyle = "#f4f7fb";
+    ctx.fillRect(bx, by, w, 10);
+    ctx.fillStyle = "#0d1117";
+    ctx.fillText(label, bx + 2, by + 8);
+  }
+
   ctx.globalAlpha = 1;
 }
 

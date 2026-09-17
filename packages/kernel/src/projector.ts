@@ -30,6 +30,14 @@ function liveCounts(agents: AgentSnapshot[]): {
   };
 }
 
+function withAgentDefaults(agent: AgentSnapshot): AgentSnapshot {
+  return {
+    ...agent,
+    thoughts: agent.thoughts ?? [],
+    children: agent.children ?? [],
+  };
+}
+
 function patchAgent(
   snapshot: RunSnapshot,
   agentId: string,
@@ -129,11 +137,34 @@ export function applyEvent(prev: RunSnapshot, event: SwarmEvent): RunSnapshot {
     case "task.handoff":
     case "task.handoff.rejected":
       return { ...prev, handoffs: [...prev.handoffs, event.handoff] };
+    case "task.vote": {
+      const vote = {
+        taskId: event.taskId,
+        voterId: event.voterId,
+        vote: event.vote,
+        reason: event.reason,
+        at: event.at,
+      };
+      return {
+        ...patchTask(prev, event.taskId, { lastVote: vote }),
+        votes: [...prev.votes, vote],
+      };
+    }
     case "agent.spawned": {
-      const agents = [
-        ...prev.agents.filter((agent) => agent.id !== event.agent.id),
-        event.agent,
-      ];
+      const incoming = withAgentDefaults(event.agent);
+      let agents = [...prev.agents.filter((agent) => agent.id !== incoming.id), incoming];
+      if (incoming.parentId) {
+        agents = agents.map((agent) =>
+          agent.id === incoming.parentId
+            ? {
+                ...agent,
+                children: agent.children.includes(incoming.id)
+                  ? agent.children
+                  : [...agent.children, incoming.id],
+              }
+            : agent,
+        );
+      }
       const counts = liveCounts(agents);
       return {
         ...prev,
@@ -160,8 +191,22 @@ export function applyEvent(prev: RunSnapshot, event: SwarmEvent): RunSnapshot {
           event.step,
         ],
       });
+    case "agent.thought": {
+      const current = prev.agents.find((agent) => agent.id === event.agentId);
+      const thoughts = [...(current?.thoughts ?? []), { delta: event.delta, at: event.at }].slice(
+        -48,
+      );
+      return patchAgent(prev, event.agentId, { thoughts });
+    }
+    case "agent.scratchpad":
+      return patchAgent(prev, event.agentId, { scratchpad: event.prompt });
     case "agent.despawned": {
-      const agents = prev.agents.filter((agent) => agent.id !== event.agentId);
+      const agents = prev.agents
+        .filter((agent) => agent.id !== event.agentId)
+        .map((agent) => ({
+          ...agent,
+          children: agent.children.filter((id) => id !== event.agentId),
+        }));
       const counts = liveCounts(agents);
       return {
         ...prev,

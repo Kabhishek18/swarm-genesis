@@ -1,5 +1,5 @@
 import type { RunSnapshot } from "@swarm/schema";
-import { findPath } from "./pathfinding.js";
+import { findPath, walkable } from "./pathfinding.js";
 import { getLayout } from "./layouts.js";
 import {
   activityAnim,
@@ -34,7 +34,7 @@ export class OfficeState {
 
   pick(worldX: number, worldY: number): string | null {
     let best: Character | undefined;
-    let bestDist = 12;
+    let bestDist = 24;
     for (const character of this.characters.values()) {
       if (!character.visible || character.despawn > 0) continue;
       const dx = character.x + 8 - worldX;
@@ -45,8 +45,30 @@ export class OfficeState {
         best = character;
       }
     }
-    this.selectedId = best?.agentId ?? null;
-    return this.selectedId;
+    if (best) {
+      this.selectedId = best.agentId;
+      return this.selectedId;
+    }
+
+    for (const station of this.layout.stations) {
+      const sx = station.x * TILE;
+      const sy = station.y * TILE;
+      const seatX = station.seatX * TILE + 8;
+      const seatY = station.seatY * TILE + 8;
+      const minX = Math.min(sx - 4, seatX - 16);
+      const maxX = Math.max(sx + TILE * 2 + 4, seatX + 16);
+      const minY = Math.min(sy - 8, seatY - 16);
+      const maxY = Math.max(sy + TILE * 2, seatY + 16);
+      const hitDesk = worldX >= minX && worldX <= maxX && worldY >= minY && worldY <= maxY;
+      const hitSeat = Math.hypot(worldX - seatX, worldY - seatY) < 20;
+      if (!hitDesk && !hitSeat) continue;
+      const occupant = this.occupantAt(station.id);
+      this.selectedId = occupant?.agentId ?? null;
+      return this.selectedId;
+    }
+
+    this.selectedId = null;
+    return null;
   }
 
   sync(snapshot: RunSnapshot): void {
@@ -60,6 +82,7 @@ export class OfficeState {
       live.add(agent.id);
       const existing = this.characters.get(agent.id);
       const station = this.station(agent.stationId) ?? this.layout.stations[0];
+      const bubble = lastBubble(agent.thoughts.at(-1)?.delta, agent.currentStep);
       if (!existing) {
         const spawn = this.layout.spawn;
         const character: Character = {
@@ -79,23 +102,23 @@ export class OfficeState {
           despawn: 0,
           visible: true,
           parentId: agent.parentId,
+          currentTool: agent.currentTool,
+          bubble,
         };
         if (agent.kind === "subagent" && station) {
           character.x = station.seatX * TILE;
           character.y = station.seatY * TILE;
           character.anim = "type";
-        } else {
-          this.retarget(character, agent.stationId);
         }
         this.characters.set(agent.id, character);
       } else {
         existing.name = agent.name;
         existing.activity = agent.activity;
         existing.hue = agent.hue;
-        if (existing.stationId !== agent.stationId || existing.path.length === 0) {
-          existing.stationId = agent.stationId;
-          this.retarget(existing, agent.stationId);
-        }
+        existing.stationId = agent.stationId;
+        existing.currentTool = agent.currentTool;
+        existing.bubble = bubble;
+        existing.parentId = agent.parentId;
         if (existing.path.length === 0) {
           existing.anim = activityAnim(agent.activity);
         }
@@ -110,14 +133,23 @@ export class OfficeState {
       }
     }
 
+    this.assignSeats();
+
     const alerted = new Set(
       snapshot.alerts
-        .filter((alert) => alert.code === "handoff-loop")
+        .filter(
+          (alert) =>
+            alert.code === "handoff-loop" || alert.code === "budget" || alert.level === "critical",
+        )
         .flatMap((alert) => alert.agentIds),
+    );
+    const globalAlarm = snapshot.alerts.some(
+      (alert) => (alert.code === "handoff-loop" || alert.code === "budget") && alert.agentIds.length === 0,
     );
     for (const station of this.layout.stations) {
       const occupants = snapshot.agents.filter((agent) => agent.stationId === station.id);
-      station.alert = occupants.some((agent) => alerted.has(agent.id));
+      station.alert =
+        occupants.some((agent) => alerted.has(agent.id)) || (globalAlarm && station.type === "hq");
     }
   }
 
@@ -159,16 +191,92 @@ export class OfficeState {
     }
   }
 
-  private retarget(character: Character, stationId: string): void {
+  private occupantAt(stationId: string): Character | undefined {
     const station = this.station(stationId);
-    if (!station) return;
+    let best: Character | undefined;
+    let bestDist = Infinity;
+    for (const character of this.characters.values()) {
+      if (character.stationId !== stationId || !character.visible || character.despawn > 0) continue;
+      const dx = character.x - (station?.seatX ?? 0) * TILE;
+      const dy = character.y - (station?.seatY ?? 0) * TILE;
+      const dist = Math.hypot(dx, dy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = character;
+      }
+    }
+    return best;
+  }
+
+  private assignSeats(): void {
+    const groups = new Map<string, Character[]>();
+    for (const character of this.characters.values()) {
+      if (!character.visible || character.despawn > 0) continue;
+      const list = groups.get(character.stationId) ?? [];
+      list.push(character);
+      groups.set(character.stationId, list);
+    }
+    for (const [stationId, occupants] of groups) {
+      const station = this.station(stationId);
+      if (!station) continue;
+      const tiles = queueTiles(this.layout, station.seatX, station.seatY, occupants.length);
+      occupants.forEach((character, index) => {
+        const dest = tiles[index] ?? tiles[tiles.length - 1] ?? { x: station.seatX, y: station.seatY };
+        this.retarget(character, dest);
+      });
+    }
+  }
+
+  private retarget(character: Character, dest: { x: number; y: number }): void {
+    if (
+      character.targetTile &&
+      character.targetTile.x === dest.x &&
+      character.targetTile.y === dest.y &&
+      (character.path.length > 0 ||
+        (Math.round(character.x / TILE) === dest.x && Math.round(character.y / TILE) === dest.y))
+    ) {
+      return;
+    }
+    character.targetTile = dest;
     const fromX = Math.round(character.x / TILE);
     const fromY = Math.round(character.y / TILE);
-    character.path = findPath(this.layout, fromX, fromY, station.seatX, station.seatY);
+    character.path = findPath(this.layout, fromX, fromY, dest.x, dest.y);
     if (character.path.length === 0) {
-      character.x = station.seatX * TILE;
-      character.y = station.seatY * TILE;
+      character.x = dest.x * TILE;
+      character.y = dest.y * TILE;
       character.anim = activityAnim(character.activity);
     }
   }
+}
+
+function lastBubble(thought?: string, step?: string): string | undefined {
+  const text = (thought && thought.trim()) || step;
+  if (!text) return undefined;
+  return text.length > 28 ? `${text.slice(0, 26)}...` : text;
+}
+
+function queueTiles(
+  layout: OfficeLayout,
+  seatX: number,
+  seatY: number,
+  needed: number,
+): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = [{ x: seatX, y: seatY }];
+  const seen = new Set([`${seatX},${seatY}`]);
+  const seats = new Set(layout.stations.map((station) => `${station.seatX},${station.seatY}`));
+  for (let radius = 1; radius <= 4 && out.length < needed; radius++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      for (let dy = -radius; dy <= radius; dy++) {
+        if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
+        const x = seatX + dx;
+        const y = seatY + dy;
+        const id = `${x},${y}`;
+        if (seen.has(id) || seats.has(id) || !walkable(layout, x, y)) continue;
+        seen.add(id);
+        out.push({ x, y });
+        if (out.length >= needed) return out;
+      }
+    }
+  }
+  return out;
 }

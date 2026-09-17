@@ -1,0 +1,27 @@
+{
+  "name": "@swarm/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --import tsx src/index.ts",
+    "start": "node --import tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/websocket": "^11.2.0",
+    "@libsql/client": "^0.15.15",
+    "@swarm/kernel": "*",
+    "@swarm/playbooks": "*",
+    "@swarm/runtime": "*",
+    "@swarm/schema": "*",
+    "fastify": "^5.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

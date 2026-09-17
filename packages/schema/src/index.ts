@@ -47,12 +47,22 @@ export interface ToolResult {
   artifact: unknown;
 }
 
+export interface ToolContext {
+  agentId: string;
+  taskId?: string;
+  role?: string;
+  onThought?: (delta: string) => void;
+  onScratchpad?: (prompt: string) => void;
+  spawnSubagent?: (def: SubagentDef) => Promise<unknown>;
+}
+
 export interface ToolAdapter {
   id: string;
   execute(
     input: unknown,
     envelope: ConstraintEnvelope,
     signal: AbortSignal,
+    ctx?: ToolContext,
   ): Promise<ToolResult>;
 }
 
@@ -119,6 +129,19 @@ export interface Playbook {
   >;
 }
 
+export interface ThoughtRecord {
+  delta: string;
+  at: number;
+}
+
+export interface VoteRecord {
+  taskId: string;
+  voterId: string;
+  vote: "accept" | "reject";
+  reason: string;
+  at: number;
+}
+
 export interface AgentSnapshot {
   id: string;
   name: string;
@@ -134,6 +157,9 @@ export interface AgentSnapshot {
   currentStep?: string;
   steps: string[];
   contextPayload?: string;
+  thoughts: ThoughtRecord[];
+  scratchpad?: string;
+  children: string[];
   spawnedAt: number;
   visible: boolean;
 }
@@ -149,6 +175,7 @@ export interface TaskSnapshot {
   stationId?: string;
   outputHash?: string;
   error?: string;
+  lastVote?: VoteRecord;
 }
 
 export interface DomainSnapshot {
@@ -202,6 +229,7 @@ export interface RunSnapshot {
   tasks: TaskSnapshot[];
   alerts: Alert[];
   handoffs: HandoffRecord[];
+  votes: VoteRecord[];
   startedAt?: number;
   finishedAt?: number;
 }
@@ -283,6 +311,16 @@ export type SwarmEvent =
       payload?: string;
       at: number;
     }
+  | { type: "agent.thought"; agentId: string; delta: string; at: number }
+  | { type: "agent.scratchpad"; agentId: string; prompt: string; at: number }
+  | {
+      type: "task.vote";
+      taskId: string;
+      voterId: string;
+      vote: "accept" | "reject";
+      reason: string;
+      at: number;
+    }
   | { type: "agent.despawned"; agentId: string; at: number };
 
 export function emptySnapshot(): RunSnapshot {
@@ -312,6 +350,7 @@ export function emptySnapshot(): RunSnapshot {
     tasks: [],
     alerts: [],
     handoffs: [],
+    votes: [],
   };
 }
 

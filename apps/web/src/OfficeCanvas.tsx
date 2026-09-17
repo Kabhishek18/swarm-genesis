@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { OfficeState, renderOffice, worldFromEvent } from "@swarm/office";
+import { useEffect, useRef, useState } from "react";
+import { OfficeState, renderOffice, TILE, worldFromEvent } from "@swarm/office";
 import type { RunSnapshot } from "@swarm/schema";
 
 interface Props {
@@ -9,11 +9,33 @@ interface Props {
   onSelect: (id: string | null) => void;
 }
 
+interface SpriteHit {
+  id: string;
+  name: string;
+  left: number;
+  top: number;
+}
+
+function camera(canvas: HTMLCanvasElement, layout: { width: number; height: number }) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.width / dpr;
+  const cssH = canvas.height / dpr;
+  const sx = cssW / (layout.width * TILE);
+  const sy = cssH / (layout.height * TILE);
+  const scale = Math.max(0.5, Math.min(sx, sy, 0.9));
+  const ox = (cssW - layout.width * TILE * scale) / 2;
+  const oy = (cssH - layout.height * TILE * scale) / 2;
+  return { scale, ox, oy };
+}
+
 export function OfficeCanvas({ snapshot, layoutId, selectedId, onSelect }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const officeRef = useRef(new OfficeState(layoutId));
   const snapshotRef = useRef(snapshot);
+  const onSelectRef = useRef(onSelect);
   snapshotRef.current = snapshot;
+  onSelectRef.current = onSelect;
+  const [hits, setHits] = useState<SpriteHit[]>([]);
 
   useEffect(() => {
     officeRef.current.setLayout(layoutId);
@@ -31,6 +53,7 @@ export function OfficeCanvas({ snapshot, layoutId, selectedId, onSelect }: Props
     if (!ctx) return;
     let raf = 0;
     let last = performance.now();
+    let lastHits = "";
 
     const resize = () => {
       const parent = canvas.parentElement;
@@ -51,6 +74,23 @@ export function OfficeCanvas({ snapshot, layoutId, selectedId, onSelect }: Props
       officeRef.current.sync(snapshotRef.current);
       officeRef.current.update(dt);
       renderOffice(ctx, officeRef.current, now);
+
+      const cam = camera(canvas, officeRef.current.layout);
+      const next: SpriteHit[] = [];
+      for (const character of officeRef.current.characters.values()) {
+        if (!character.visible || character.despawn > 0) continue;
+        next.push({
+          id: character.agentId,
+          name: character.name,
+          left: cam.ox + (character.x + 8) * cam.scale,
+          top: cam.oy + (character.y + 8) * cam.scale,
+        });
+      }
+      const encoded = JSON.stringify(next);
+      if (encoded !== lastHits) {
+        lastHits = encoded;
+        setHits(next);
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -60,17 +100,36 @@ export function OfficeCanvas({ snapshot, layoutId, selectedId, onSelect }: Props
     };
   }, []);
 
+  function selectAt(event: { clientX: number; clientY: number }) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const world = worldFromEvent(canvas, officeRef.current.layout, event);
+    onSelectRef.current(officeRef.current.pick(world.x, world.y));
+  }
+
   return (
     <div className="office-wrap">
       <canvas
         ref={canvasRef}
-        onClick={(event) => {
-          const canvas = canvasRef.current;
-          if (!canvas) return;
-          const world = worldFromEvent(canvas, officeRef.current.layout, event);
-          onSelect(officeRef.current.pick(world.x, world.y));
+        onClick={selectAt}
+        onPointerUp={(event) => {
+          if (event.pointerType === "mouse" && event.button !== 0) return;
+          selectAt(event);
         }}
       />
+      {hits.map((hit) => (
+        <button
+          key={hit.id}
+          type="button"
+          className={`sprite-hit${selectedId === hit.id ? " selected" : ""}`}
+          aria-label={`Inspect ${hit.name}`}
+          style={{ left: hit.left, top: hit.top }}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelect(hit.id);
+          }}
+        />
+      ))}
     </div>
   );
 }

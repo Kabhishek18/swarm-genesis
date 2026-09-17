@@ -33,6 +33,10 @@ body,
   overflow: hidden;
 }
 
+.app.inspecting {
+  grid-template-columns: 280px 1fr 360px;
+}
+
 .topbar {
   grid-column: 1 / -1;
   display: flex;
@@ -107,9 +111,60 @@ select:disabled {
   border-color: var(--ok);
 }
 
-.chip.failed {
+.chip.ok {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.banner {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 11px;
+  max-width: 280px;
+}
+
+.banner.bad {
   color: var(--bad);
   border-color: var(--bad);
+}
+
+.drawer {
+  border-left: 1px solid var(--line);
+  overflow: auto;
+  padding: 16px;
+  background: #10161e;
+}
+
+.drawer-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.scratchpad {
+  white-space: pre-wrap;
+  font-size: 10px;
+  line-height: 1.4;
+  background: #0d1117;
+  border: 1px solid var(--line);
+  padding: 8px;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.thoughts {
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--mute);
+}
+
+.constraints {
+  font-size: 11px;
+  color: var(--mute);
+  padding-left: 16px;
 }
 
 .hud {
@@ -214,6 +269,7 @@ select:disabled {
 }
 
 .office-wrap {
+  position: relative;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -224,4 +280,22 @@ select:disabled {
   display: block;
   image-rendering: pixelated;
   cursor: pointer;
+}
+
+.sprite-hit {
+  position: absolute;
+  z-index: 2;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+}
+
+.sprite-hit:hover,
+.sprite-hit.selected {
+  border-color: #d7e0ea;
 }

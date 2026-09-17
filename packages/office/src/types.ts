@@ -55,6 +55,9 @@ export interface Character {
   despawn: number;
   visible: boolean;
   parentId?: string;
+  currentTool?: string;
+  bubble?: string;
+  targetTile?: { x: number; y: number };
 }
 
 export function activityAnim(activity: AgentActivity): CharAnim {

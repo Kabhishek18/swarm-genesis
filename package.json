@@ -1,0 +1,23 @@
+{
+  "name": "swarm-genesis",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Multi-orchestrator agent OS with a Pixel Agents-style office",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @swarm/web",
+    "build": "npm run build -w @swarm/web",
+    "test": "npm run test -w @swarm/kernel",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}
+

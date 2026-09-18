@@ -40,6 +40,8 @@ export interface KernelOptions {
   reviewer?: Reviewer;
   /** When true (default), `handoff.duplicate` forces identical hashes so the breaker can demo. */
   simulatedDuplicates?: boolean;
+  /** Per-run directory for capped write_file output. */
+  workspaceDir?: string;
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -112,6 +114,7 @@ export class SwarmKernel {
   private envelope?: ConstraintEnvelope;
   private reviewer: Reviewer = simulatedReviewer();
   private simulatedDuplicates = true;
+  private workspaceDir?: string;
 
   subscribe(listener: EventListener): () => void {
     return this.log.subscribe(listener);
@@ -144,6 +147,7 @@ export class SwarmKernel {
     this.clock = options.now ?? Date.now;
     this.reviewer = options.reviewer ?? simulatedReviewer();
     this.simulatedDuplicates = options.simulatedDuplicates ?? true;
+    this.workspaceDir = options.workspaceDir;
     this.abort = new AbortController();
     const signal = this.abort.signal;
     this.startedAt = this.clock();
@@ -840,12 +844,16 @@ export class SwarmKernel {
       agentId,
       taskId,
       role: snap?.role,
+      workspaceDir: this.workspaceDir,
       onThought: (delta) => {
         if (!delta) return;
         this.emit({ type: "agent.thought", agentId, delta, at: this.clock() });
       },
       onScratchpad: (prompt) => {
         this.emit({ type: "agent.scratchpad", agentId, prompt, at: this.clock() });
+      },
+      onFileWritten: (filePath, bytes) => {
+        this.emit({ type: "file.written", path: filePath, bytes, at: this.clock() });
       },
       spawnSubagent: async (def) => {
         const playbook = this.playbook;

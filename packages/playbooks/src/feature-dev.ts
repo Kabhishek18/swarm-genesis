@@ -13,7 +13,7 @@ const budget = {
 
 export const featureDevPlaybook: Playbook = {
   id: "feature-dev",
-  name: "End-to-End Feature Development",
+  name: "Build a feature",
   trigger: "Build and test an authentication module.",
   layoutId: "feature-dev",
   qualityBar: "Password hashing, migrations, unit tests, and a security fuzz pass must land together.",

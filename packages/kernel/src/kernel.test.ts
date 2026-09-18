@@ -137,6 +137,10 @@ describe("SwarmKernel", () => {
     expect(agent?.thoughts[0]?.delta).toBe("hmm");
     expect(agent?.scratchpad).toBe("sys");
     expect(snap.votes[0]?.vote).toBe("reject");
+    snap = applyEvent(snap, { type: "file.written", path: "notes.txt", bytes: 5, at: 6 });
+    expect(snap.files).toEqual([{ path: "notes.txt", bytes: 5 }]);
+    snap = applyEvent(snap, { type: "file.written", path: "notes.txt", bytes: 9, at: 7 });
+    expect(snap.files).toEqual([{ path: "notes.txt", bytes: 9 }]);
   });
 
   it("spawn_subagent returns the child artifact and emits lifecycle events", async () => {
@@ -235,5 +239,78 @@ describe("SwarmKernel", () => {
     expect(replayed.status).toBe(live.status);
     expect(replayed.tasks.map((task) => task.status)).toEqual(live.tasks.map((task) => task.status));
     expect(replayed.alerts.length).toBe(live.alerts.length);
+  });
+
+  it("emits file.written into the snapshot when onFileWritten fires", async () => {
+    const kernel = new SwarmKernel();
+    const envelope = { originalGoal: "write notes", qualityBar: "txt", constraints: ["keep goal"] };
+    const playbook = {
+      id: "file-write",
+      name: "File write",
+      trigger: "write notes",
+      layoutId: "feature-dev",
+      qualityBar: "txt",
+      constraints: ["keep goal"],
+      budget: {
+        tokensLimit: 1000,
+        wallClockLimitMs: 10_000,
+        maxLiveAgents: 8,
+        maxConcurrentSubagents: 1,
+        maxVisibleSubagents: 2,
+        maxHandoffHops: 3,
+        subagentTtlMs: 5_000,
+      },
+      domains: [{ id: "lab", name: "Lab", orchestratorId: "orch" }],
+      agents: [
+        { id: "meta", name: "Meta", kind: "meta" as const, role: "root", stationId: "hq", hue: 40 },
+        {
+          id: "orch",
+          name: "Orch",
+          kind: "domain-orchestrator" as const,
+          domainId: "lab",
+          role: "orch",
+          stationId: "desk-arch",
+          hue: 200,
+        },
+        {
+          id: "worker",
+          name: "Worker",
+          kind: "worker" as const,
+          domainId: "lab",
+          role: "writer",
+          stationId: "terminal-backend",
+          hue: 120,
+        },
+      ],
+      tasks: [
+        {
+          id: "write",
+          title: "Write notes",
+          assignee: "worker",
+          domainId: "lab",
+          dependsOn: [],
+          toolId: "note-tool",
+          activity: "thinking" as const,
+        },
+      ],
+      adapters: [
+        {
+          id: "note-tool",
+          async execute(
+            _input: unknown,
+            _env: typeof envelope,
+            _signal: AbortSignal,
+            ctx?: { onFileWritten?: (path: string, bytes: number) => void },
+          ) {
+            ctx?.onFileWritten?.("notes.txt", 12);
+            return { tokens: 1, latencyMs: 0, artifact: { summary: "wrote notes.txt" } };
+          },
+        },
+      ],
+    };
+    await kernel.start(playbook, { timeScale: 200, simulatedDuplicates: false, runId: "run-files" });
+    const snap = kernel.getSnapshot();
+    expect(snap.files).toEqual([{ path: "notes.txt", bytes: 12 }]);
+    expect(kernel.log.events.some((event) => event.type === "file.written")).toBe(true);
   });
 });

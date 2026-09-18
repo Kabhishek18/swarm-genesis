@@ -53,8 +53,10 @@ export interface ToolContext {
   agentId: string;
   taskId?: string;
   role?: string;
+  workspaceDir?: string;
   onThought?: (delta: string) => void;
   onScratchpad?: (prompt: string) => void;
+  onFileWritten?: (path: string, bytes: number) => void;
   spawnSubagent?: (def: SubagentDef) => Promise<unknown>;
 }
 
@@ -240,6 +242,7 @@ export interface RunSnapshot {
   alerts: Alert[];
   handoffs: HandoffRecord[];
   votes: VoteRecord[];
+  files: { path: string; bytes: number }[];
   startedAt?: number;
   finishedAt?: number;
 }
@@ -370,7 +373,8 @@ export type SwarmEvent =
       reason: SubagentEndReason;
       at: number;
     }
-  | { type: "agent.despawned"; agentId: string; at: number };
+  | { type: "agent.despawned"; agentId: string; at: number }
+  | { type: "file.written"; path: string; bytes: number; at: number };
 
 export function emptySnapshot(): RunSnapshot {
   return {
@@ -400,6 +404,7 @@ export function emptySnapshot(): RunSnapshot {
     alerts: [],
     handoffs: [],
     votes: [],
+    files: [],
   };
 }
 

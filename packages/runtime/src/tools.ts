@@ -1,6 +1,10 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { CHILD_LOOP_TOOL_ID, type SubagentDef, type ToolContext } from "@swarm/schema";
 import type { OllamaToolDef } from "./ollama.js";
 import { FETCH_SIZE_CAP, FETCH_TIMEOUT_MS } from "./config.js";
+
+export const WRITE_FILE_EXTS = [".html", ".css", ".js", ".md", ".txt", ".json"] as const;
 
 export const OLLAMA_TOOLS: OllamaToolDef[] = [
   {
@@ -45,6 +49,22 @@ export const OLLAMA_TOOLS: OllamaToolDef[] = [
   {
     type: "function",
     function: {
+      name: "write_file",
+      description:
+        "Write a non-empty UTF-8 deliverable under the run workspace. Relative paths only; extensions .html .css .js .md .txt .json. Content must not be empty or whitespace-only. Not a general filesystem.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          content: { type: "string" },
+        },
+        required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "spawn_subagent",
       description:
         "Request an ephemeral sub-agent. Pass a playbook toolId, or taskDescription+role for an isolated child loop. The kernel still enforces TTL and spawn caps.",
@@ -67,6 +87,36 @@ export const OLLAMA_TOOLS: OllamaToolDef[] = [
 
 const ALLOWED = new Set(OLLAMA_TOOLS.map((tool) => tool.function.name));
 
+export function resolveWorkspaceFile(
+  workspaceDir: string | undefined,
+  relPath: string,
+): { abs: string; rel: string } {
+  if (!workspaceDir?.trim()) {
+    throw new Error("write_file requires a workspace directory");
+  }
+  if (!relPath.trim()) {
+    throw new Error("write_file path is empty");
+  }
+  const trimmed = relPath.trim().replace(/\\/g, "/");
+  if (path.isAbsolute(trimmed) || trimmed.startsWith("/") || /^[a-zA-Z]:/.test(trimmed)) {
+    throw new Error("write_file rejects absolute paths");
+  }
+  if (trimmed.split("/").some((part) => part === ".." || part === "")) {
+    throw new Error("write_file rejects path traversal");
+  }
+  const ext = path.posix.extname(trimmed).toLowerCase();
+  if (!WRITE_FILE_EXTS.includes(ext as (typeof WRITE_FILE_EXTS)[number])) {
+    throw new Error(`write_file allows only ${WRITE_FILE_EXTS.join(", ")}`);
+  }
+  const root = path.resolve(workspaceDir);
+  const abs = path.resolve(root, trimmed);
+  const relative = path.relative(root, abs);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("write_file rejects path traversal");
+  }
+  return { abs, rel: relative.split(path.sep).join("/") };
+}
+
 export async function executeCappedTool(
   name: string,
   args: Record<string, unknown>,
@@ -87,6 +137,8 @@ export async function executeCappedTool(
       ctx?.onScratchpad?.(note);
       return { written: true, bytes: note.length };
     }
+    case "write_file":
+      return writeWorkspaceFile(String(args.path ?? ""), args.content == null ? "" : String(args.content), ctx);
     case "spawn_subagent": {
       const def = buildSubagentDef(args);
       const artifact = await ctx?.spawnSubagent?.(def);
@@ -102,6 +154,22 @@ export async function executeCappedTool(
     default:
       throw new Error(`Tool ${name} is not implemented`);
   }
+}
+
+export async function writeWorkspaceFile(
+  relPath: string,
+  content: string,
+  ctx: ToolContext | undefined,
+): Promise<{ written: true; path: string; bytes: number }> {
+  if (typeof content !== "string" || !content.trim()) {
+    throw new Error("write_file rejects empty content");
+  }
+  const { abs, rel } = resolveWorkspaceFile(ctx?.workspaceDir, relPath);
+  await mkdir(path.dirname(abs), { recursive: true });
+  await writeFile(abs, content, "utf8");
+  const bytes = Buffer.byteLength(content, "utf8");
+  ctx?.onFileWritten?.(rel, bytes);
+  return { written: true, path: rel, bytes };
 }
 
 function optionalString(value: unknown): string | undefined {

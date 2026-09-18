@@ -6,6 +6,7 @@ interface Props {
   snapshot: RunSnapshot;
   layoutId: string;
   selectedId: string | null;
+  pinned?: boolean;
   onSelect: (id: string | null) => void;
 }
 
@@ -28,7 +29,7 @@ function camera(canvas: HTMLCanvasElement, layout: { width: number; height: numb
   return { scale, ox, oy };
 }
 
-export function OfficeCanvas({ snapshot, layoutId, selectedId, onSelect }: Props) {
+export function OfficeCanvas({ snapshot, layoutId, selectedId, pinned = false, onSelect }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const officeRef = useRef(new OfficeState(layoutId));
   const snapshotRef = useRef(snapshot);
@@ -67,6 +68,9 @@ export function OfficeCanvas({ snapshot, layoutId, selectedId, onSelect }: Props
     };
     resize();
     window.addEventListener("resize", resize);
+    const parent = canvas.parentElement;
+    const observer = parent ? new ResizeObserver(resize) : null;
+    if (parent && observer) observer.observe(parent);
 
     const tick = (now: number) => {
       const dt = Math.min(0.05, (now - last) / 1000);
@@ -97,6 +101,7 @@ export function OfficeCanvas({ snapshot, layoutId, selectedId, onSelect }: Props
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
+      observer?.disconnect();
     };
   }, []);
 
@@ -130,6 +135,9 @@ export function OfficeCanvas({ snapshot, layoutId, selectedId, onSelect }: Props
           }}
         />
       ))}
+      <p className="office-hint">
+        {pinned ? "Pinned — click Follow live in Results to resume auto-follow." : "Click a desk to pin; otherwise following live output."}
+      </p>
     </div>
   );
 }

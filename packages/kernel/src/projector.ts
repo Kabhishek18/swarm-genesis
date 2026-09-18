@@ -280,6 +280,10 @@ export function applyEvent(prev: RunSnapshot, event: SwarmEvent): RunSnapshot {
       return patchAgent(prev, event.agentId, { scratchpad: event.prompt });
     case "agent.despawned":
       return despawnAgent(prev, event.agentId);
+    case "file.written": {
+      const files = (prev.files ?? []).filter((item) => item.path !== event.path);
+      return { ...prev, files: [...files, { path: event.path, bytes: event.bytes }] };
+    }
     default:
       return prev;
   }

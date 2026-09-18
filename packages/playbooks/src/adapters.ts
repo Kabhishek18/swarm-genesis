@@ -14,9 +14,6 @@ export function simulatedAdapter(
       if (!envelope.originalGoal.trim()) {
         throw new Error("context-drift: ConstraintEnvelope.originalGoal is required");
       }
-      if (signal.aborted) {
-        throw new DOMException("Aborted", "AbortError");
-      }
       const value =
         typeof artifact === "function"
           ? (artifact as (input: unknown, envelope: ConstraintEnvelope) => unknown)(
@@ -24,6 +21,9 @@ export function simulatedAdapter(
               envelope,
             )
           : artifact;
+      if (signal.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
       return { tokens, latencyMs, artifact: value };
     },
   };

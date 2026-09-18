@@ -1,10 +1,26 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import { SwarmKernel } from "@swarm/kernel";
 import { getPlaybook, playbooks } from "@swarm/playbooks";
 import { ollamaAvailable, ollamaDisabled, ollamaHost, ollamaModel, wrapPlaybook } from "@swarm/runtime";
 import { emptySnapshot, type RunSnapshot, type SwarmEvent } from "@swarm/schema";
 import { EventStore } from "./store.js";
+import {
+  defaultUploadDir,
+  isOversizeError,
+  MAX_UPLOAD_BYTES,
+  saveUpload,
+  UploadError,
+} from "./uploads.js";
+import {
+  defaultRunsDir,
+  ensureRunWorkspace,
+  isSafeRunId,
+  listWorkspaceFiles,
+  runWorkspaceDir,
+  zipDirectory,
+} from "./workspace.js";
 
 export interface GatewayMessage {
   type: "event" | "snapshot" | "run" | "error" | "hello";
@@ -30,9 +46,22 @@ interface LiveRun {
   stopping?: boolean;
 }
 
-export async function buildGateway(store: EventStore): Promise<FastifyInstance> {
+export interface GatewayOptions {
+  uploadDir?: string;
+  runsDir?: string;
+}
+
+export async function buildGateway(store: EventStore, options: GatewayOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
+  const uploadDir = options.uploadDir ?? defaultUploadDir();
+  const runsDir = options.runsDir ?? defaultRunsDir();
   await app.register(websocket);
+  await app.register(multipart, {
+    limits: {
+      fileSize: MAX_UPLOAD_BYTES,
+      files: 1,
+    },
+  });
 
   app.addHook("onRequest", async (request) => {
     if (request.method === "POST" && !request.headers["content-type"]) {
@@ -56,12 +85,28 @@ export async function buildGateway(store: EventStore): Promise<FastifyInstance> 
     }
   };
 
+  async function withDiskFiles(runId: string | undefined, snapshot: RunSnapshot): Promise<RunSnapshot> {
+    const id = runId || snapshot.runId;
+    if (!id || !isSafeRunId(id)) return snapshot;
+    try {
+      const disk = await listWorkspaceFiles(runWorkspaceDir(runsDir, id));
+      if (!disk.length) return snapshot;
+      const merged = new Map((snapshot.files ?? []).map((file) => [file.path, file]));
+      for (const file of disk) merged.set(file.path, file);
+      return { ...snapshot, files: [...merged.values()] };
+    } catch {
+      return snapshot;
+    }
+  }
+
   const tickSnapshots = () => {
     if (snapshotTimer) return;
     snapshotTimer = setInterval(() => {
       const live = currentRunId ? runs.get(currentRunId) : undefined;
       if (!live) return;
-      broadcast({ type: "snapshot", snapshot: live.kernel.getSnapshot(), runId: live.id });
+      void withDiskFiles(live.id, live.kernel.getSnapshot()).then((snapshot) => {
+        broadcast({ type: "snapshot", snapshot, runId: live.id });
+      });
     }, 1000);
   };
 
@@ -127,9 +172,10 @@ export async function buildGateway(store: EventStore): Promise<FastifyInstance> 
       existing.kernel.stop();
     }
     runs.clear();
-    const bound = await wrapPlaybook(playbook);
     const kernel = new SwarmKernel();
     const runId = `run-${Date.now()}`;
+    const workspaceDir = await ensureRunWorkspace(runsDir, runId);
+    const bound = await wrapPlaybook(playbook, { workspaceDir });
     console.log(
       `[swarm] run ${runId} live=${bound.live} disabled=${ollamaDisabled()} host=${ollamaHost()} model=${ollamaModel()}`,
     );
@@ -153,6 +199,7 @@ export async function buildGateway(store: EventStore): Promise<FastifyInstance> 
         runId,
         reviewer: bound.reviewer,
         simulatedDuplicates: !bound.live,
+        workspaceDir,
       })
       .catch((error: unknown) => {
         broadcast({
@@ -178,14 +225,100 @@ export async function buildGateway(store: EventStore): Promise<FastifyInstance> 
   app.get("/api/runs/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
     const live = runs.get(id);
-    if (live) return { runId: id, snapshot: live.kernel.getSnapshot() };
+    if (live) {
+      return { runId: id, snapshot: await withDiskFiles(id, live.kernel.getSnapshot()) };
+    }
     try {
-      const snapshot = await store.snapshot(id);
+      const snapshot = await withDiskFiles(id, await store.snapshot(id));
       return { runId: id, snapshot };
     } catch {
       return reply.code(404).send({ error: "run not found" });
     }
   });
+
+  app.get("/api/runs/:id/files", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isSafeRunId(id)) return reply.code(404).send({ error: "run not found" });
+    try {
+      const files = await listWorkspaceFiles(runWorkspaceDir(runsDir, id));
+      return { files };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return reply.code(404).send({ error: "run workspace not found" });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/api/runs/:id/files.zip", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isSafeRunId(id)) return reply.code(404).send({ error: "run not found" });
+    try {
+      const zip = await zipDirectory(runWorkspaceDir(runsDir, id));
+      return reply
+        .type("application/zip")
+        .header("content-disposition", `attachment; filename="${id}-files.zip"`)
+        .send(zip);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return reply.code(404).send({ error: "run workspace not found" });
+      }
+      throw error;
+    }
+  });
+
+  app.setErrorHandler((error, _request, reply) => {
+    if (isOversizeError(error)) {
+      return reply.code(400).send({ error: "file too large" });
+    }
+    return reply.send(error);
+  });
+
+  app.post(
+    "/api/uploads",
+    { bodyLimit: MAX_UPLOAD_BYTES + 1024 * 1024 },
+    async (request, reply) => {
+      let part;
+      try {
+        part = await request.file();
+      } catch (error) {
+        if (isOversizeError(error)) {
+          return reply.code(400).send({ error: "file too large" });
+        }
+        return reply.code(400).send({ error: "file required" });
+      }
+      if (!part || part.fieldname !== "file") {
+        return reply.code(400).send({ error: "file required" });
+      }
+
+      let buffer: Buffer;
+      try {
+        buffer = await part.toBuffer();
+      } catch (error) {
+        if (isOversizeError(error)) {
+          return reply.code(400).send({ error: "file too large" });
+        }
+        throw error;
+      }
+      if (buffer.byteLength > MAX_UPLOAD_BYTES) {
+        return reply.code(400).send({ error: "file too large" });
+      }
+
+      try {
+        return await saveUpload({
+          buffer,
+          filename: part.filename || "upload",
+          mimetype: part.mimetype || "",
+          uploadDir,
+        });
+      } catch (error) {
+        if (error instanceof UploadError) {
+          return reply.code(error.status).send({ error: error.message });
+        }
+        throw error;
+      }
+    },
+  );
 
   app.post("/api/runs", async (request, reply) => {
     const body = (request.body ?? {}) as { playbookId?: string; goal?: string };
@@ -204,23 +337,30 @@ export async function buildGateway(store: EventStore): Promise<FastifyInstance> 
 
   app.get("/ws", { websocket: true }, (socket) => {
     sockets.add(socket);
-    const live = currentRunId ? runs.get(currentRunId) : undefined;
-    socket.send(
-      JSON.stringify({
-        type: "hello",
-        runId: live?.id,
-        snapshot: live?.kernel.getSnapshot(),
-      } satisfies GatewayMessage),
-    );
-    if (live) {
-      socket.send(
-        JSON.stringify({
-          type: "snapshot",
-          runId: live.id,
-          snapshot: live.kernel.getSnapshot(),
-        } satisfies GatewayMessage),
-      );
-    }
+    void (async () => {
+      const live = currentRunId ? runs.get(currentRunId) : undefined;
+      const snapshot = live ? await withDiskFiles(live.id, live.kernel.getSnapshot()) : undefined;
+      try {
+        socket.send(
+          JSON.stringify({
+            type: "hello",
+            runId: live?.id,
+            snapshot,
+          } satisfies GatewayMessage),
+        );
+        if (live) {
+          socket.send(
+            JSON.stringify({
+              type: "snapshot",
+              runId: live.id,
+              snapshot,
+            } satisfies GatewayMessage),
+          );
+        }
+      } catch {
+        sockets.delete(socket);
+      }
+    })();
     socket.on("message", (raw) => {
       let command: GatewayCommand;
       try {

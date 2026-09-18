@@ -13,7 +13,7 @@ const budget = {
 
 export const marketIntelPlaybook: Playbook = {
   id: "market-intel",
-  name: "Deep Market & Competitor Intelligence",
+  name: "Market research",
   trigger: "Produce an analysis of 5 direct competitors and their pricing changes.",
   layoutId: "market-intel",
   qualityBar: "Every competitor needs a current price, a currency, and a fact-check against archive data.",

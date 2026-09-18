@@ -250,7 +250,228 @@ marketIntelLayout.tiles = fillRoom(32, 18, (x, y) => {
 });
 doorway(marketIntelLayout.tiles, 16, 10);
 
-export const layouts: OfficeLayout[] = [featureDevLayout, marketIntelLayout];
+export const websiteStudioLayout: OfficeLayout = {
+  id: "website-studio",
+  name: "Studio Floor",
+  width: 32,
+  height: 18,
+  tiles: [],
+  spawn: { x: 16, y: 16 },
+  zones: [
+    { id: "design", name: "Design", x: 1, y: 1, w: 14, h: 10 },
+    { id: "frontend", name: "Frontend", x: 17, y: 1, w: 14, h: 10 },
+    { id: "copy", name: "Copy", x: 17, y: 12, w: 14, h: 5 },
+  ],
+  stations: [
+    { id: "hq", type: "hq", name: "Meta HQ", x: 14, y: 2, seatX: 15, seatY: 4 },
+    {
+      id: "desk-design",
+      type: "desk",
+      name: "Desk · Design",
+      x: 4,
+      y: 4,
+      seatX: 5,
+      seatY: 6,
+      domainId: "design",
+    },
+    {
+      id: "desk-frontend",
+      type: "desk",
+      name: "Desk · Frontend",
+      x: 24,
+      y: 4,
+      seatX: 25,
+      seatY: 6,
+      domainId: "frontend",
+    },
+    {
+      id: "design-archive",
+      type: "archive",
+      name: "Moodboard shelves",
+      x: 2,
+      y: 8,
+      seatX: 3,
+      seatY: 9,
+      domainId: "design",
+    },
+    {
+      id: "frontend-archive",
+      type: "archive",
+      name: "Component shelf",
+      x: 28,
+      y: 8,
+      seatX: 27,
+      seatY: 9,
+      domainId: "frontend",
+    },
+    {
+      id: "terminal-design",
+      type: "terminal",
+      name: "Layout bay",
+      x: 3,
+      y: 13,
+      seatX: 4,
+      seatY: 14,
+      domainId: "design",
+    },
+    {
+      id: "terminal-html",
+      type: "terminal",
+      name: "HTML bay",
+      x: 22,
+      y: 6,
+      seatX: 23,
+      seatY: 7,
+      domainId: "frontend",
+    },
+    {
+      id: "desk-copy",
+      type: "desk",
+      name: "Desk · Copy",
+      x: 24,
+      y: 13,
+      seatX: 25,
+      seatY: 15,
+      domainId: "copy",
+    },
+    {
+      id: "terminal-copy",
+      type: "terminal",
+      name: "Copy console",
+      x: 18,
+      y: 13,
+      seatX: 19,
+      seatY: 14,
+      domainId: "copy",
+    },
+  ],
+};
+
+websiteStudioLayout.tiles = fillRoom(32, 18, (x, y) => {
+  if (x === 16 && y > 0 && y < 12) return "wall";
+  if (y === 11 && x >= 17 && x <= 30) return "wall";
+  if (x >= 1 && x <= 14 && y >= 1 && y <= 10) return (x + y) % 2 === 0 ? "carpet" : "carpetAlt";
+  if (x >= 17 && x <= 30 && y >= 1 && y <= 10) return (x + y) % 2 === 0 ? "carpet" : "carpetAlt";
+  if (x >= 17 && x <= 30 && y >= 12 && y <= 16) return (x + y) % 2 === 0 ? "carpet" : "carpetAlt";
+  return undefined;
+});
+doorway(websiteStudioLayout.tiles, 16, 7);
+doorway(websiteStudioLayout.tiles, 23, 11);
+
+export const writingRoomLayout: OfficeLayout = {
+  id: "writing-room",
+  name: "Writing Floor",
+  width: 32,
+  height: 18,
+  tiles: [],
+  spawn: { x: 16, y: 16 },
+  zones: [
+    { id: "outline", name: "Outline", x: 1, y: 1, w: 14, h: 10 },
+    { id: "draft", name: "Draft", x: 17, y: 1, w: 14, h: 10 },
+    { id: "edit", name: "Edit", x: 17, y: 12, w: 14, h: 5 },
+  ],
+  stations: [
+    { id: "hq", type: "hq", name: "Meta HQ", x: 14, y: 2, seatX: 15, seatY: 4 },
+    {
+      id: "desk-outline",
+      type: "desk",
+      name: "Desk · Outline",
+      x: 4,
+      y: 4,
+      seatX: 5,
+      seatY: 6,
+      domainId: "outline",
+    },
+    {
+      id: "desk-draft",
+      type: "desk",
+      name: "Desk · Draft",
+      x: 24,
+      y: 4,
+      seatX: 25,
+      seatY: 6,
+      domainId: "draft",
+    },
+    {
+      id: "outline-archive",
+      type: "archive",
+      name: "Brief shelves",
+      x: 2,
+      y: 8,
+      seatX: 3,
+      seatY: 9,
+      domainId: "outline",
+    },
+    {
+      id: "draft-archive",
+      type: "archive",
+      name: "Draft stacks",
+      x: 28,
+      y: 8,
+      seatX: 27,
+      seatY: 9,
+      domainId: "draft",
+    },
+    {
+      id: "terminal-outline",
+      type: "terminal",
+      name: "Outline bay",
+      x: 3,
+      y: 13,
+      seatX: 4,
+      seatY: 14,
+      domainId: "outline",
+    },
+    {
+      id: "terminal-draft",
+      type: "terminal",
+      name: "Draft bay",
+      x: 22,
+      y: 6,
+      seatX: 23,
+      seatY: 7,
+      domainId: "draft",
+    },
+    {
+      id: "desk-edit",
+      type: "desk",
+      name: "Desk · Edit",
+      x: 24,
+      y: 13,
+      seatX: 25,
+      seatY: 15,
+      domainId: "edit",
+    },
+    {
+      id: "terminal-edit",
+      type: "terminal",
+      name: "Edit console",
+      x: 18,
+      y: 13,
+      seatX: 19,
+      seatY: 14,
+      domainId: "edit",
+    },
+  ],
+};
+
+writingRoomLayout.tiles = fillRoom(32, 18, (x, y) => {
+  if (x === 16 && y > 0 && y < 12) return "wall";
+  if (y === 11 && x >= 17 && x <= 30) return "wall";
+  if (x >= 1 && x <= 14 && y >= 1 && y <= 10) return (x + y) % 2 === 0 ? "carpet" : "carpetAlt";
+  if (x >= 17 && x <= 30 && y >= 1 && y <= 10) return (x + y) % 2 === 0 ? "carpet" : "carpetAlt";
+  if (x >= 17 && x <= 30 && y >= 12 && y <= 16) return (x + y) % 2 === 0 ? "carpet" : "carpetAlt";
+  return undefined;
+});
+doorway(writingRoomLayout.tiles, 16, 7);
+doorway(writingRoomLayout.tiles, 23, 11);
+
+export const layouts: OfficeLayout[] = [
+  featureDevLayout,
+  marketIntelLayout,
+  websiteStudioLayout,
+  writingRoomLayout,
+];
 
 export function getLayout(id: string): OfficeLayout {
   return layouts.find((layout) => layout.id === id) ?? featureDevLayout;
